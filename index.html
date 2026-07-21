@@ -127,7 +127,12 @@ table.hourly td:first-child, table.hourly th:first-child { text-align: left; }
 #saved-list .meta { font-size: 11px; color: var(--muted); }
 
 /* --- Segment list --- */
-#seg-list { list-style: none; margin: 10px 0 0; padding: 0; }
+#seg-list {
+  list-style: none; margin: 10px 0 0; padding: 0;
+  /* Shaping a route adds segments quickly — cap the height so a long list
+     doesn't push the stats and fueling panels off screen. */
+  max-height: 180px; overflow-y: auto;
+}
 #seg-list li {
   display: flex; align-items: center; gap: 6px; padding: 4px 0;
   border-bottom: 1px solid var(--border); font-size: 12px;
@@ -157,6 +162,18 @@ footer a { color: var(--muted); }
   width: 22px; height: 22px; line-height: 22px; text-align: center;
   font-size: 11px; font-weight: 700; border: 2px solid #fff;
   box-shadow: 0 1px 4px rgba(0,0,0,.35);
+}
+/* Intermediate points are smaller, so a route shaped with many of them stays readable. */
+.wp-label.via {
+  width: 16px; height: 16px; line-height: 15px; font-size: 9px; border-width: 2px;
+}
+
+/* Invisible wide hit area for grabbing the route. An explicit pointer-events rule
+   is used because a zero-opacity SVG stroke does not reliably receive events. */
+.grab-line {
+  stroke-opacity: 0;
+  pointer-events: stroke;
+  cursor: copy;
 }
 
 @media (max-width: 820px) {
@@ -314,6 +331,46 @@ const state = {
 
 // Cache of already-computed legs so editing one waypoint doesn't re-route everything.
 const legCache = new Map();
+
+/* --- Undo history -------------------------------------------------------
+   Snapshots of the route's inputs, not its geometry. Restoring one produces
+   the same legCache keys, so undo replays from cache without any network
+   request — which is what makes it feel instant. */
+const history = [];
+const HISTORY_LIMIT = 50;
+
+function snapshot() {
+  return {
+    waypoints: state.waypoints.map(w => ({ lat: w.lat, lng: w.lng })),
+    transport: state.transport.slice(),
+    activity: state.activity.key,
+    snap: state.snap
+  };
+}
+
+/** Record the current state so the action about to happen can be undone. */
+function pushHistory() {
+  history.push(snapshot());
+  if (history.length > HISTORY_LIMIT) history.shift();
+}
+
+function undo() {
+  const prev = history.pop();
+  if (!prev) return;
+
+  state.waypoints = prev.waypoints;
+  state.transport = prev.transport;
+  state.activity = ACTIVITIES.find(a => a.key === prev.activity) || state.activity;
+  state.snap = prev.snap;
+
+  $("activity").value = state.activity.key;
+  $("snap").checked = state.snap;
+  syncPaceField();
+
+  // Rebuild from scratch; legCache serves every leg, so this costs nothing.
+  state.legs = new Array(Math.max(0, state.waypoints.length - 1)).fill(null);
+  recalculate();
+}
 
 /* ==========================================================================
    3. SMALL UTILITIES
@@ -855,13 +912,145 @@ function drawRoute() {
       ? { color: "#7c3aed", weight: 4, opacity: .9, dashArray: "10,8" }
       : { color: "#e5342b", weight: 5, opacity: .85 };
     L.polyline(latlngs, style).addTo(routeLayer);
+
+    // A wide invisible line on top, so the route is easy to grab. It uses an
+    // explicit pointer-events rule rather than opacity:0, because a zero-opacity
+    // SVG stroke does not reliably receive pointer events across browsers.
+    L.polyline(latlngs, { className: "grab-line", weight: 18, interactive: true })
+      .addTo(routeLayer)
+      .on("mousedown", ev => beginLineDrag(i, ev))
+      .on("mouseover", () => { if (!lineDrag) map.getContainer().style.cursor = "copy"; })
+      .on("mousemove", ev => { if (!lineDrag) showInsertHint(i, ev.latlng); })
+      .on("mouseout", () => { if (!lineDrag) hideInsertHint(); })
+      // A tap on touch arrives as a click; mousedown handles the desktop path.
+      .on("click", ev => {
+        L.DomEvent.stopPropagation(ev);
+        if (!lineDrag && !clickSuppressed()) insertWaypoint(i, snapToLeg(i, ev.latlng));
+      });
   });
+}
+
+/* --- Inserting a waypoint into an existing leg -------------------------- */
+
+/**
+ * Split leg `legIndex` in two at `latlng`. The mirror of removeWaypoint():
+ * one leg becomes two, and splitting a ferry gives two ferry halves.
+ */
+function insertWaypoint(legIndex, latlng) {
+  pushHistory();
+  const wasTransport = !!state.transport[legIndex];
+  state.waypoints.splice(legIndex + 1, 0, { lat: latlng.lat, lng: latlng.lng });
+  state.legs.splice(legIndex, 1, null, null);
+  state.transport.splice(legIndex, 1, wasTransport, wasTransport);
+  recalculate();
+}
+
+/** Nearest point on a leg's geometry, measured in screen space. */
+function snapToLeg(legIndex, latlng) {
+  const leg = state.legs[legIndex];
+  if (!leg || leg.length < 2) return latlng;
+
+  const p = map.latLngToLayerPoint(latlng);
+  let best = null, bestDist = Infinity;
+  for (let j = 1; j < leg.length; j++) {
+    const a = map.latLngToLayerPoint([leg[j - 1][1], leg[j - 1][0]]);
+    const b = map.latLngToLayerPoint([leg[j][1], leg[j][0]]);
+    const c = L.LineUtil.closestPointOnSegment(p, a, b);
+    const d = p.distanceTo(c);
+    if (d < bestDist) { bestDist = d; best = c; }
+  }
+  return best ? map.layerPointToLatLng(best) : latlng;
+}
+
+let lineDrag = null;
+
+/* When a press on the route ends, the browser still fires a click. That click must
+   not insert a second point. Recorded as a timestamp rather than a flag cleared by
+   a timer: a timer that fails to fire (a backgrounded tab throttles them) would
+   leave the guard stuck on and silently disable tap-to-insert on touch. */
+let lastGestureEnd = 0;
+const CLICK_SUPPRESS_MS = 400;
+const clickSuppressed = () => Date.now() - lastGestureEnd < CLICK_SUPPRESS_MS;
+
+const insertHint = L.circleMarker([0, 0], {
+  radius: 6, color: "#fff", weight: 2, fillColor: "#2563eb", fillOpacity: .85,
+  interactive: false
+});
+
+function showInsertHint(legIndex, latlng) {
+  insertHint.setLatLng(snapToLeg(legIndex, latlng));
+  if (!map.hasLayer(insertHint)) insertHint.addTo(map);
+}
+
+function hideInsertHint() {
+  if (map.hasLayer(insertHint)) map.removeLayer(insertHint);
+  map.getContainer().style.cursor = "";
+}
+
+/** Is this mouse event's cursor inside the map viewport? */
+function overMap(e) {
+  if (typeof e.clientX !== "number") return true;   // no position info: assume yes
+  const r = map.getContainer().getBoundingClientRect();
+  return e.clientX >= r.left && e.clientX <= r.right
+      && e.clientY >= r.top  && e.clientY <= r.bottom;
+}
+
+/**
+ * Press-and-drag on the route to place a new waypoint. Both the drag and the
+ * plain press are resolved from mousedown — binding insertion to click as well
+ * would fire twice for a drag.
+ */
+function beginLineDrag(legIndex, ev) {
+  L.DomEvent.stop(ev.originalEvent);   // keep it away from the map's own handlers
+
+  const start = snapToLeg(legIndex, ev.latlng);
+  const startPoint = map.latLngToContainerPoint(ev.latlng);
+  lineDrag = { moved: false, latlng: start };
+
+  map.dragging.disable();
+  insertHint.setLatLng(start);
+  if (!map.hasLayer(insertHint)) insertHint.addTo(map);
+
+  // Position is tracked from the map's own mousemove; the drag ends on a single
+  // document-level mouseup so that releasing outside the map still cleans up
+  // (otherwise the map would be left permanently undraggable).
+  const onMove = e => {
+    if (map.latLngToContainerPoint(e.latlng).distanceTo(startPoint) > 4) lineDrag.moved = true;
+    lineDrag.latlng = lineDrag.moved ? e.latlng : start;
+    insertHint.setLatLng(lineDrag.latlng);
+  };
+
+  const finish = e => {
+    map.off("mousemove", onMove);
+    document.removeEventListener("mouseup", finish);
+    map.dragging.enable();
+    hideInsertHint();
+
+    const drag = lineDrag;
+    lineDrag = null;
+    if (!drag) return;
+
+    // Suppress the click that follows any completed press — including an aborted
+    // one, or that click would insert a point the drag deliberately discarded.
+    lastGestureEnd = Date.now();
+
+    // Dropped outside the map: abort rather than placing a point off-screen.
+    // Tested by cursor position, not event target — a document-level mouseup
+    // reports whatever element it bubbled to, which is not a reliable signal.
+    if (drag.moved && e && !overMap(e)) return;
+
+    insertWaypoint(legIndex, drag.latlng);
+  };
+
+  map.on("mousemove", onMove);
+  document.addEventListener("mouseup", finish);
 }
 const hoverMarker = L.circleMarker([0, 0], {
   radius: 6, color: "#fff", weight: 2, fillColor: "#e5342b", fillOpacity: 1
 });
 
 map.on("click", e => {
+  pushHistory();
   state.waypoints.push({ lat: e.latlng.lat, lng: e.latlng.lng });
   const newLeg = state.waypoints.length - 2;
   if (newLeg >= 0 && state.nextTransport) state.transport[newLeg] = true;
@@ -877,10 +1066,14 @@ function drawMarkers() {
       draggable: true,
       icon: L.divIcon({
         className: "",
-        html: `<div class="wp-label" style="background:${isEnd ? "#067d3d" : "#2563eb"}">${label}</div>`,
-        iconSize: [22, 22], iconAnchor: [11, 11]
+        html: `<div class="wp-label${isEnd ? "" : " via"}" style="background:${
+          isEnd ? "#067d3d" : "#2563eb"}">${label}</div>`,
+        iconSize: isEnd ? [22, 22] : [16, 16],
+        iconAnchor: isEnd ? [11, 11] : [8, 8]
       })
     });
+
+    marker.on("dragstart", () => pushHistory());
 
     marker.on("dragend", ev => {
       const p = ev.target.getLatLng();
@@ -888,7 +1081,7 @@ function drawMarkers() {
       // Only the legs on either side of this waypoint are invalidated.
       if (i - 1 >= 0) state.legs[i - 1] = null;
       if (i < state.legs.length) state.legs[i] = null;
-      recalculate([i - 1, i]);
+      recalculate();
     });
 
     marker.on("click", ev => {
@@ -901,6 +1094,7 @@ function drawMarkers() {
 }
 
 function removeWaypoint(i) {
+  pushHistory();
   state.waypoints.splice(i, 1);
   // Removing a waypoint joins its two neighbouring legs into one new leg. The
   // joined leg counts as transport only if both halves were.
@@ -1218,7 +1412,8 @@ function render() {
   drawRoute();
 
   const has = state.coords.length > 1;
-  ["undo", "clear", "reverse"].forEach(id => { $(id).disabled = !state.waypoints.length; });
+  ["clear", "reverse"].forEach(id => { $(id).disabled = !state.waypoints.length; });
+  $("undo").disabled = history.length === 0;   // tracks actions, not waypoints
   $("gpx").disabled = !has;
   $("save").disabled = !has;
 
@@ -1255,6 +1450,7 @@ function renderSegments() {
     btn.title = isTransport ? "Counts as transport — click to include it again"
                             : "Exclude this segment as ferry / train / lift";
     btn.onclick = () => {
+      pushHistory();
       state.transport[i] = !state.transport[i];
       state.legs[i] = null;          // geometry differs between routed and transport
       recalculate();
@@ -1380,6 +1576,7 @@ function syncPaceField() {
 })();
 
 $("activity").onchange = e => {
+  pushHistory();
   state.activity = ACTIVITIES.find(a => a.key === e.target.value);
   syncPaceField();
   // Profile changed, so every leg has to be re-routed.
@@ -1388,6 +1585,7 @@ $("activity").onchange = e => {
 };
 
 $("snap").onchange = e => {
+  pushHistory();
   state.snap = e.target.checked;
   state.legs = state.legs.map(() => null);
   recalculate();
@@ -1395,15 +1593,11 @@ $("snap").onchange = e => {
 
 $("next-transport").onchange = e => { state.nextTransport = e.target.checked; };
 
-$("undo").onclick = () => {
-  if (!state.waypoints.length) return;
-  state.waypoints.pop();
-  state.legs.pop();
-  state.transport.pop();
-  recalculate();
-};
+$("undo").onclick = undo;
 
 $("clear").onclick = () => {
+  if (!state.waypoints.length) return;
+  pushHistory();                 // Clear is recoverable
   state.waypoints = [];
   state.legs = [];
   state.transport = [];
@@ -1414,6 +1608,7 @@ $("clear").onclick = () => {
 };
 
 $("reverse").onclick = () => {
+  pushHistory();
   state.waypoints.reverse();
   state.transport.reverse();     // leg i now sits between the mirrored waypoints
   state.legs = state.legs.map(() => null);

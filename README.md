@@ -35,6 +35,11 @@ host. That's the whole deployment.
 - **GPX export** for Garmin / Wahoo / Strava.
 - **Save routes** in the browser (see the caveat below).
 - Click the map to add points, drag markers to reshape, click a marker to delete it.
+- **Shape a route mid-way** — grab the route line anywhere and drag it onto the road you
+  want; a waypoint is created at the drop point in one motion. Clicking the line without
+  dragging inserts a point in place, which is also what a tap does on touch.
+- **Undo** steps back through what you actually did — insert, move, delete, reverse,
+  transport toggle, activity change, and clear.
 
 ## Services it depends on
 
@@ -129,6 +134,16 @@ clamped to 300–1000 ml/h. Sodium is 500 mg/L, or 900 mg/L for salty sweaters.
   and still produces a route.
 - Sea depth: the Moss–Horten ferry crossing reads 8 m climb / 0 m low point, against
   185 m / −167 m before the fix.
+- Mid-route insertion: dragging the line moves the route (3.62 → 3.91 km) and places the
+  waypoint at the drop point; clicking without dragging inserts on the line with distance
+  unchanged to 3 decimals. Both cost exactly 2 routing requests, neither appends a stray
+  end point, and the trailing click a drag produces does not insert a second time.
+  Releasing outside the map aborts cleanly and leaves the map draggable.
+- Undo: 10 mixed edits (append, insert, drag, delete, reverse, transport toggle, activity
+  change, clear) undo back to an empty route with **zero network calls**, since legCache
+  serves every replayed leg.
+- Splitting a transport leg yields two transport halves, with ride and transport distance
+  both unchanged.
 - Transport segments: excluding the Moss–Horten leg moves a 25.25 km route to 12.79 km
   ridden plus 10.17 km transport, and the time estimate from 1h00m to 0h33m. GPX splits
   into separate `trkseg`s, saved routes keep their flags across a reload with zero

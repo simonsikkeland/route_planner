@@ -149,6 +149,10 @@ clamped to 300–1000 ml/h. Sodium is 500 mg/L, or 900 mg/L for salty sweaters.
   and still produces a route.
 - Sea depth: the Moss–Horten ferry crossing reads 8 m climb / 0 m low point, against
   185 m / −167 m before the fix.
+- Long routes: a 155 km route exports all 5847 points, and reconstructing distance from
+  the downloaded GPX gives back 155.4 km. A synthetic 400 km / 40 000-point route exports
+  complete at 2.66 MB. Saving a 150 km route uses ~0.15 MB of `localStorage`, so roughly
+  30 of them fit the browser quota.
 - Preview: scrubbing to 50% lands at exactly half the path distance; the figure
   interpolates in ~14 m steps rather than snapping between nodes; playback at 500x runs
   13.28 s against a predicted 13.25 s and takes exactly 2.5x longer at 200x; climbs are

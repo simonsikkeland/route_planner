@@ -1699,11 +1699,25 @@ function downloadGPX() {
   if (name === null) return;
   const blob = new Blob([toGPX(state.coords, name || "Route", state.segTransport)],
                         { type: "application/gpx+xml" });
+
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  a.href = url;
   a.download = (name || "route").replace(/[^\w\-. ]+/g, "_") + ".gpx";
+  a.style.display = "none";
+
+  // The anchor has to be in the document for click() to fire reliably in some
+  // browsers, and the object URL must outlive the download. Revoking it on the
+  // next statement — as this used to — kills the URL while the browser is still
+  // reading the blob, which silently truncates anything big enough not to finish
+  // instantly. A 150 km route is about 400 kB and loses most of itself that way.
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(a.href);
+
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    if (a.parentNode) a.parentNode.removeChild(a);
+  }, 60000);
 }
 
 /* ==========================================================================

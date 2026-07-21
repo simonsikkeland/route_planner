@@ -1,0 +1,7 @@
+# Local dev-server config — contains machine-specific absolute paths
+.claude/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+Desktop.ini

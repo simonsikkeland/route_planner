@@ -1,0 +1,1222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Route Planner — Norway</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+/* ==========================================================================
+   STYLES
+   ========================================================================== */
+:root {
+  --bg: #ffffff;
+  --panel: #f7f7f8;
+  --border: #e0e0e3;
+  --text: #18181b;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --accent-soft: #eff4ff;
+  --danger: #b3261e;
+  --ok: #067d3d;
+  --route: #e5342b;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  display: flex;
+  overflow: hidden;
+}
+
+/* --- Layout --- */
+#sidebar {
+  width: 360px;
+  flex: 0 0 360px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 16px;
+}
+#mapwrap { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#map { flex: 1; min-height: 0; }
+#profile-panel {
+  height: 150px;
+  flex: 0 0 150px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  position: relative;
+}
+#profile-panel.empty { display: none; }
+
+h1 { font-size: 17px; margin: 0 0 2px; }
+.tagline { color: var(--muted); font-size: 12px; margin: 0 0 16px; }
+h2 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 20px 0 8px; font-weight: 600;
+}
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+select, input[type=number], input[type=text] {
+  width: 100%; padding: 7px 8px; border: 1px solid var(--border);
+  border-radius: 6px; font: inherit; background: var(--bg); color: var(--text);
+}
+.row { display: flex; gap: 8px; }
+.row > * { flex: 1; min-width: 0; }
+.field { margin-bottom: 10px; }
+
+button {
+  font: inherit; padding: 7px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text); cursor: pointer;
+}
+button:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled) { background: #1d4ed8; }
+.btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn-row button { flex: 1; white-space: nowrap; }
+
+/* --- Stats --- */
+#stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stat {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px 10px;
+}
+.stat .v { font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+.stat .l { font-size: 11px; color: var(--muted); }
+.stat .sub { font-size: 10px; color: var(--muted); }
+
+/* --- Fueling --- */
+#fuel-out .line {
+  display: flex; justify-content: space-between; gap: 8px;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+}
+#fuel-out .line:last-child { border-bottom: 0; }
+#fuel-out .line b { font-weight: 650; }
+#fuel-out .hint { color: var(--muted); font-size: 11px; }
+table.hourly { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+table.hourly th, table.hourly td {
+  text-align: right; padding: 4px 5px; border-bottom: 1px solid var(--border);
+}
+table.hourly th { color: var(--muted); font-weight: 600; font-size: 11px; }
+table.hourly td:first-child, table.hourly th:first-child { text-align: left; }
+
+.note {
+  font-size: 11px; color: var(--muted); background: var(--bg);
+  border: 1px solid var(--border); border-left: 3px solid var(--muted);
+  border-radius: 4px; padding: 8px; margin-top: 10px;
+}
+#status {
+  font-size: 12px; padding: 7px 9px; border-radius: 6px; margin-bottom: 10px;
+  background: var(--accent-soft); color: var(--accent); display: none;
+}
+#status.show { display: block; }
+#status.error { background: #fdecea; color: var(--danger); }
+#status.ok { background: #e7f6ed; color: var(--ok); }
+
+/* --- Saved routes --- */
+#saved-list { list-style: none; margin: 0; padding: 0; }
+#saved-list li {
+  display: flex; align-items: center; gap: 6px; padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+#saved-list .name { flex: 1; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#saved-list .name:hover { color: var(--accent); text-decoration: underline; }
+#saved-list .meta { font-size: 11px; color: var(--muted); }
+#saved-list button { padding: 2px 7px; font-size: 11px; }
+.empty-msg { color: var(--muted); font-size: 12px; font-style: italic; }
+
+footer { margin-top: 22px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+footer a { color: var(--muted); }
+
+/* --- Profile chart --- */
+#profile-svg { width: 100%; height: 100%; display: block; }
+#profile-tip {
+  position: absolute; pointer-events: none; background: var(--text); color: #fff;
+  font-size: 11px; padding: 3px 7px; border-radius: 4px; white-space: nowrap;
+  transform: translate(-50%, -140%); opacity: 0; transition: opacity .1s;
+}
+.wp-label {
+  background: var(--accent); color: #fff; border-radius: 50%;
+  width: 22px; height: 22px; line-height: 22px; text-align: center;
+  font-size: 11px; font-weight: 700; border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,.35);
+}
+
+@media (max-width: 820px) {
+  body { flex-direction: column; overflow: auto; }
+  #sidebar { width: 100%; flex: none; border-right: 0; border-bottom: 1px solid var(--border); order: 2; }
+  #mapwrap { order: 1; height: 65vh; flex: none; }
+}
+</style>
+</head>
+<body>
+
+<aside id="sidebar">
+  <h1>Route Planner</h1>
+  <p class="tagline">Draw running &amp; cycling routes that snap to real roads, cycleways and trails.</p>
+
+  <div id="status"></div>
+
+  <h2>Activity</h2>
+  <div class="field">
+    <select id="activity"></select>
+  </div>
+  <div class="field">
+    <label><input type="checkbox" id="snap" checked style="width:auto"> Snap to roads &amp; trails</label>
+    <div class="hint" style="font-size:11px;color:var(--muted)">Uncheck to draw straight lines off-trail.</div>
+  </div>
+
+  <h2>Route</h2>
+  <div class="btn-row">
+    <button id="undo" disabled>Undo</button>
+    <button id="reverse" disabled>Reverse</button>
+    <button id="clear" disabled>Clear</button>
+  </div>
+  <p class="hint" style="font-size:11px;color:var(--muted);margin:8px 0 0">
+    Click the map to add points. Drag a marker to move it, click a marker to delete it.
+  </p>
+
+  <h2>Stats</h2>
+  <div id="stats"></div>
+
+  <h2>Fueling</h2>
+  <div class="row">
+    <div class="field">
+      <label for="weight">Body weight (kg)</label>
+      <input type="number" id="weight" value="75" min="30" max="200" step="1">
+    </div>
+    <div class="field">
+      <label for="pace" id="pace-label">Flat pace (min/km)</label>
+      <input type="number" id="pace" value="5.5" min="2" max="30" step="0.1">
+    </div>
+  </div>
+  <div class="row">
+    <div class="field">
+      <label for="temp">Temperature (°C)</label>
+      <input type="number" id="temp" value="15" min="-25" max="40" step="1">
+    </div>
+    <div class="field">
+      <label for="effort">Effort</label>
+      <select id="effort">
+        <option value="easy">Easy</option>
+        <option value="moderate" selected>Moderate</option>
+        <option value="hard">Hard</option>
+      </select>
+    </div>
+  </div>
+  <div class="field">
+    <label><input type="checkbox" id="salty" style="width:auto"> I'm a salty sweater (white marks on kit)</label>
+  </div>
+  <div id="fuel-out"><p class="empty-msg">Draw a route to see a fueling plan.</p></div>
+
+  <h2>Export &amp; save</h2>
+  <div class="btn-row">
+    <button id="gpx" disabled>Download GPX</button>
+    <button id="save" class="primary" disabled>Save route</button>
+  </div>
+  <h2>Saved routes</h2>
+  <ul id="saved-list"></ul>
+
+  <footer>
+    Map &amp; elevation &copy; <a href="https://www.kartverket.no/" target="_blank" rel="noopener">Kartverket</a> (CC BY 4.0) ·
+    Map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors ·
+    Routing by <a href="https://brouter.de/" target="_blank" rel="noopener">BRouter</a>
+  </footer>
+</aside>
+
+<div id="mapwrap">
+  <div id="map"></div>
+  <div id="profile-panel" class="empty">
+    <svg id="profile-svg"></svg>
+    <div id="profile-tip"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+"use strict";
+
+/* ==========================================================================
+   1. CONFIG
+   ========================================================================== */
+
+const BROUTER_URL    = "https://brouter.de/brouter";
+const KARTVERKET_URL = "https://ws.geonorge.no/hoydedata/v1/punkt";
+
+// Kartverket allows a maximum of 50 coordinates per request (verified: 60 -> HTTP 422).
+const KV_BATCH_SIZE  = 50;
+const KV_CONCURRENCY = 6;
+// Upper bound on how many points we ask Kartverket for on one route. Beyond this we
+// resample evenly, to keep a very long route from firing hundreds of requests.
+const KV_MAX_POINTS  = 3000;
+
+// Elevation noise threshold in metres. Small up/down wobbles below this are ignored so
+// that data jitter doesn't inflate total climb.
+const ELEV_THRESHOLD = 2;
+
+// Spacing for interpolated points when snapping is off (straight-line segments).
+const STRAIGHT_SPACING_M = 25;
+
+const ACTIVITIES = [
+  { key: "run",     label: "Running (road)",   profile: "trekking",    kind: "run",  pace: 5.5 },
+  { key: "trail",   label: "Trail running",    profile: "hiking-beta", kind: "run",  pace: 6.5 },
+  { key: "road",    label: "Road cycling",     profile: "fastbike",    kind: "bike", speed: 28, maxDescentKmh: 60 },
+  { key: "gravel",  label: "Gravel cycling",   profile: "gravel",      kind: "bike", speed: 22, maxDescentKmh: 45 },
+  { key: "mtb",     label: "Mountain biking",  profile: "mtb",         kind: "bike", speed: 16, maxDescentKmh: 32 },
+  { key: "touring", label: "Touring / commute",profile: "trekking",    kind: "bike", speed: 20, maxDescentKmh: 50 }
+];
+
+const STORAGE_KEY = "routeplanner.routes.v1";
+
+/* ==========================================================================
+   2. STATE
+   ========================================================================== */
+
+const state = {
+  waypoints: [],   // [{lat, lng}]
+  legs: [],        // legs[i] = coords from waypoint i to i+1, or null while loading
+  activity: ACTIVITIES[0],
+  snap: true,
+  coords: [],      // merged [[lon, lat, ele], ...] for the whole route
+  stats: null,
+  busy: 0,
+  notice: null     // non-fatal warning to show once routing settles
+};
+
+// Cache of already-computed legs so editing one waypoint doesn't re-route everything.
+const legCache = new Map();
+
+/* ==========================================================================
+   3. SMALL UTILITIES
+   ========================================================================== */
+
+const $ = id => document.getElementById(id);
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const round = (v, d = 0) => { const m = 10 ** d; return Math.round(v * m) / m; };
+
+function haversine(a, b) {
+  const R = 6371000;
+  const dLat = (b[1] - a[1]) * Math.PI / 180;
+  const dLon = (b[0] - a[0]) * Math.PI / 180;
+  const la1 = a[1] * Math.PI / 180, la2 = b[1] * Math.PI / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function setStatus(msg, kind) {
+  const el = $("status");
+  if (!msg) { el.className = ""; el.textContent = ""; return; }
+  el.textContent = msg;
+  el.className = "show" + (kind ? " " + kind : "");
+}
+
+function busy(delta) {
+  state.busy += delta;
+  if (state.busy > 0) setStatus("Calculating route…");
+  else setStatus("");
+}
+
+/** Run async `fn` over `items` with a bounded number of parallel workers. */
+async function pooled(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  }));
+  return out;
+}
+
+/* ==========================================================================
+   4. ROUTING
+
+   Every network call for routing goes through routeLeg(). If the public BRouter
+   server becomes unavailable or rate-limited, swapping in a self-hosted BRouter
+   or another engine means changing this one function.
+   ========================================================================== */
+
+/**
+ * Route a single leg between two waypoints.
+ * Returns [[lon, lat, ele], ...]. Elevation here is BRouter's SRTM data; it is
+ * replaced with Kartverket's 1 m data later by refineElevation().
+ */
+async function routeLeg(from, to, profile) {
+  const url = BROUTER_URL
+    + `?lonlats=${from.lng.toFixed(6)},${from.lat.toFixed(6)}|${to.lng.toFixed(6)},${to.lat.toFixed(6)}`
+    + `&profile=${encodeURIComponent(profile)}&alternativeidx=0&format=geojson`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    // BRouter reports "no route found" as a plain-text body, which is worth surfacing.
+    const body = await res.text().catch(() => "");
+    throw new Error(body.trim().slice(0, 160) || `Routing failed (HTTP ${res.status})`);
+  }
+  const json = await res.json();
+  const feature = json.features && json.features[0];
+  if (!feature || !feature.geometry || !feature.geometry.coordinates.length) {
+    throw new Error("No route found between those points.");
+  }
+  return feature.geometry.coordinates.map(c => [c[0], c[1], c[2] ?? 0]);
+}
+
+/** Straight line between two points, interpolated so we can still sample elevation. */
+function straightLeg(from, to) {
+  const a = [from.lng, from.lat], b = [to.lng, to.lat];
+  const dist = haversine(a, b);
+  const n = Math.max(1, Math.round(dist / STRAIGHT_SPACING_M));
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    pts.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, 0]);
+  }
+  return pts;
+}
+
+function legKey(from, to, profile, snap) {
+  const f = `${from.lat.toFixed(6)},${from.lng.toFixed(6)}`;
+  const t = `${to.lat.toFixed(6)},${to.lng.toFixed(6)}`;
+  return `${snap ? profile : "straight"}|${f}|${t}`;
+}
+
+/** Fetch (or reuse) the leg between waypoints i and i+1, including refined elevation. */
+async function buildLeg(i) {
+  const from = state.waypoints[i], to = state.waypoints[i + 1];
+  const key = legKey(from, to, state.activity.profile, state.snap);
+
+  if (legCache.has(key)) { state.legs[i] = legCache.get(key); return; }
+
+  const coords = state.snap
+    ? await routeLeg(from, to, state.activity.profile)
+    : straightLeg(from, to);
+
+  await refineElevation(coords);
+  legCache.set(key, coords);
+  state.legs[i] = coords;
+}
+
+/** Recompute the route, rebuilding only the legs that have been invalidated. */
+async function recalculate() {
+  const needed = state.waypoints.length - 1;
+  state.legs.length = Math.max(0, needed);
+
+  if (needed < 1) { state.coords = []; state.stats = null; render(); return; }
+
+  let error = null;
+  state.notice = null;
+  busy(1);
+  try {
+    // Only legs explicitly invalidated (set to null) are rebuilt; everything else is
+    // reused as-is, and buildLeg() additionally hits legCache before any network call.
+    for (let i = 0; i < needed; i++) {
+      if (!state.legs[i]) await buildLeg(i);
+    }
+
+    mergeLegs();
+  } catch (err) {
+    console.error(err);
+    error = err.message || "Could not calculate the route.";
+    if (/failed to fetch|networkerror|load failed/i.test(error)) {
+      error = "Could not reach the routing server — check your connection and try again.";
+    }
+  } finally {
+    // busy(-1) clears the transient "Calculating…" text, so any error or warning
+    // has to be shown after it — otherwise it gets wiped immediately.
+    busy(-1);
+    if (error) setStatus(error, "error");
+    else if (state.notice) setStatus(state.notice, "");
+    render();
+  }
+}
+
+/** Concatenate legs into one coordinate array, dropping the duplicated joint points. */
+function mergeLegs() {
+  const merged = [];
+  state.legs.forEach((leg, i) => {
+    if (!leg) return;
+    const start = i === 0 ? 0 : 1;
+    for (let j = start; j < leg.length; j++) merged.push(leg[j]);
+  });
+  state.coords = merged;
+  state.stats = computeStats(merged);
+}
+
+/* ==========================================================================
+   5. ELEVATION
+
+   BRouter returns ~30 m SRTM elevation. Kartverket's dtm1 is 1 m lidar terrain
+   data and is markedly better in the steep, forested terrain this app targets,
+   so we overwrite BRouter's values where Kartverket has coverage.
+   ========================================================================== */
+
+/** Replace elevations in-place with Kartverket dtm1 data. Falls back silently. */
+async function refineElevation(coords) {
+  if (!coords.length) return;
+
+  // Sample every point unless the route is very long, in which case space them evenly.
+  let idx;
+  if (coords.length <= KV_MAX_POINTS) {
+    idx = coords.map((_, i) => i);
+  } else {
+    const step = coords.length / KV_MAX_POINTS;
+    idx = Array.from({ length: KV_MAX_POINTS }, (_, i) => Math.floor(i * step));
+  }
+
+  const batches = [];
+  for (let i = 0; i < idx.length; i += KV_BATCH_SIZE) batches.push(idx.slice(i, i + KV_BATCH_SIZE));
+
+  try {
+    const results = await pooled(batches, KV_CONCURRENCY, async batch => {
+      const pts = batch.map(i => [coords[i][0], coords[i][1]]);
+      const url = `${KARTVERKET_URL}?koordsys=4326&punkter=${encodeURIComponent(JSON.stringify(pts))}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Kartverket HTTP ${res.status}`);
+      const json = await res.json();
+      return json.punkter || [];
+    });
+
+    let missing = 0;
+    batches.forEach((batch, b) => {
+      const got = results[b];
+      batch.forEach((coordIdx, k) => {
+        const z = got[k] && got[k].z;
+        // Outside Norwegian coverage Kartverket returns z:null — keep BRouter's value.
+        if (typeof z === "number") coords[coordIdx][2] = z;
+        else missing++;
+      });
+    });
+
+    // If we sampled sparsely, interpolate the untouched points so the profile stays smooth.
+    if (coords.length > KV_MAX_POINTS) interpolateGaps(coords, idx);
+
+    // Recorded rather than displayed directly: recalculate() owns the status line.
+    // Kartverket's coverage extends somewhat past the national border, so this only
+    // fires where data genuinely runs out, not merely on leaving Norway.
+    if (missing > idx.length * 0.15) {
+      state.notice = "Part of this route is outside Norwegian elevation coverage — "
+                   + "climb figures there are lower-resolution.";
+    }
+  } catch (err) {
+    // Elevation refinement is an enhancement, not a requirement: keep BRouter's numbers.
+    console.warn("Kartverket elevation unavailable, using BRouter SRTM:", err);
+  }
+}
+
+/** Linear-interpolate elevation for points between sampled indices. */
+function interpolateGaps(coords, sampled) {
+  for (let s = 0; s < sampled.length - 1; s++) {
+    const a = sampled[s], b = sampled[s + 1];
+    const za = coords[a][2], zb = coords[b][2];
+    for (let i = a + 1; i < b; i++) {
+      coords[i][2] = za + (zb - za) * ((i - a) / (b - a));
+    }
+  }
+}
+
+/**
+ * Distance, ascent and descent for the whole route.
+ *
+ * Computed from the merged coordinate array rather than by summing BRouter's
+ * per-leg "filtered ascend", because that sum would drift depending on how the
+ * route happened to be split into legs.
+ *
+ * Ascent uses hysteresis: climb only counts once it exceeds ELEV_THRESHOLD from
+ * the last committed reference height, which suppresses data jitter.
+ */
+function computeStats(coords) {
+  if (coords.length < 2) return null;
+
+  let distance = 0;
+  const cum = [0];
+  for (let i = 1; i < coords.length; i++) {
+    distance += haversine(coords[i - 1], coords[i]);
+    cum.push(distance);
+  }
+
+  let ascent = 0, descent = 0, ref = coords[0][2];
+  for (const c of coords) {
+    const d = c[2] - ref;
+    if (d > ELEV_THRESHOLD) { ascent += d; ref = c[2]; }
+    else if (d < -ELEV_THRESHOLD) { descent -= d; ref = c[2]; }
+  }
+
+  const eles = coords.map(c => c[2]);
+  return {
+    distance, ascent, descent, cum,
+    minEle: Math.min(...eles),
+    maxEle: Math.max(...eles)
+  };
+}
+
+/* ==========================================================================
+   6. DURATION MODEL
+
+   Running uses Minetti's energy cost of running as a function of gradient
+   (Minetti et al., 2002), which is the same curve behind "grade adjusted pace".
+   Cycling solves a standard power balance per segment for the rider's weight.
+   ========================================================================== */
+
+/** Minetti energy cost of running, J/kg/m, for gradient i (rise/run). */
+function minettiCost(i) {
+  const g = clamp(i, -0.45, 0.45);
+  return 155.4*g**5 - 30.4*g**4 - 43.3*g**3 + 46.3*g**2 + 19.5*g + 3.6;
+}
+
+/**
+ * Time multiplier vs flat pace for running.
+ *
+ * Pure Minetti implies you'd run ~40% faster on a -10% descent, which nobody
+ * sustains — biomechanics and braking, not metabolism, are the limit downhill.
+ * So the energy curve is damped: never faster than 0.8x flat, and steep descents
+ * (beyond -25%) get progressively slower again. Approximate but far closer to
+ * reality than using the raw energy ratio.
+ */
+function runTimeFactor(i) {
+  let f = minettiCost(i) / 3.6;
+  f = Math.max(f, 0.80);
+  if (i < -0.25) f = Math.max(f, 0.80 + (-i - 0.25) * 2.0);
+  return f;
+}
+
+/* --- Cycling physics ---------------------------------------------------
+   Drag area and rolling resistance differ enough between bike types that one
+   set of coefficients gives badly wrong power. Road values applied to gravel
+   implied only 93 W at 22 km/h — roughly half reality — which in turn
+   undercounted calories. Each activity therefore carries its own pair.
+   Road CdA 0.42 / Crr 0.005 puts 28 km/h at about 164 W, which matches
+   real-world figures. */
+const BIKE = { rho: 1.225, g: 9.81, drivetrain: 0.97 };
+const BIKE_COEFF = {
+  road:    { CdA: 0.42, Crr: 0.005 },  // hoods, slick tyres on tarmac
+  gravel:  { CdA: 0.45, Crr: 0.012 },  // wider tyres, loose surface
+  mtb:     { CdA: 0.50, Crr: 0.018 },  // upright, knobby tyres on trail
+  touring: { CdA: 0.48, Crr: 0.007 }   // upright, wider tyres on tarmac
+};
+const coeffFor = activity => BIKE_COEFF[activity && activity.key] || BIKE_COEFF.road;
+
+/** Power at the pedals needed to hold speed `v` on a given gradient. */
+function bikePowerAt(v, gradient, massKg, coeff) {
+  const { rho, g, drivetrain } = BIKE;
+  const { CdA, Crr } = coeff;
+  const theta = Math.atan(gradient);
+  const resist = 0.5*rho*CdA*v**3
+               + Crr*massKg*g*Math.cos(theta)*v
+               + massKg*g*Math.sin(theta)*v;
+  return resist / drivetrain;
+}
+
+/** Power the rider must be producing to hold their stated flat speed. */
+function bikePowerFor(flatSpeedMs, massKg, coeff) {
+  return bikePowerAt(flatSpeedMs, 0, massKg, coeff);
+}
+
+/** Solve the power balance for speed on a given gradient. */
+function bikeSpeedAt(gradient, power, massKg, maxSpeedMs, coeff) {
+  const f = v => bikePowerAt(v, gradient, massKg, coeff) - power;
+
+  let lo = 0.5, hi = 30;
+  if (f(hi) < 0) return maxSpeedMs;   // steep descent: gravity alone exceeds the range
+  if (f(lo) > 0) return lo;           // steep climb: barely moving
+  for (let k = 0; k < 60; k++) {
+    const mid = (lo + hi) / 2;
+    if (f(mid) > 0) hi = mid; else lo = mid;
+  }
+  return clamp((lo + hi) / 2, 1.0, maxSpeedMs);
+}
+
+/**
+ * Estimated moving time (seconds) and energy expenditure (kcal) for the route,
+ * walking segment by segment so that gradient is accounted for properly.
+ */
+function estimateEffort(coords, activity, input, weightKg) {
+  if (!coords || coords.length < 2) return null;
+
+  const isRun = activity.kind === "run";
+  const bikeMass = weightKg + 9;                       // rider + bike
+  const flatSpeed = isRun ? 1000 / (input * 60)        // min/km -> m/s
+                          : input / 3.6;               // km/h  -> m/s
+  const coeff = coeffFor(activity);
+  const power = isRun ? 0 : bikePowerFor(flatSpeed, bikeMass, coeff);
+  // Descents are limited by confidence, surface and corners, not by physics.
+  const maxDescent = (activity.maxDescentKmh || 55) / 3.6;
+
+  let seconds = 0, joules = 0;
+
+  for (let i = 1; i < coords.length; i++) {
+    const d = haversine(coords[i - 1], coords[i]);
+    if (d < 0.5) continue;                             // skip near-duplicate nodes
+    const grade = clamp((coords[i][2] - coords[i - 1][2]) / d, -0.5, 0.5);
+
+    if (isRun) {
+      seconds += (d / flatSpeed) * runTimeFactor(grade);
+      joules  += minettiCost(grade) * weightKg * d;    // metabolic cost, J
+    } else {
+      const v = bikeSpeedAt(grade, power, bikeMass, maxDescent, coeff);
+      const t = d / v;
+      seconds += t;
+      // On a descent the rider is often coasting, so charge only the power
+      // actually needed to hold the achieved speed — never more than they can
+      // produce, and never less than zero.
+      joules += clamp(bikePowerAt(v, grade, bikeMass, coeff), 0, power) * t;
+    }
+  }
+
+  // Running: Minetti gives metabolic cost directly.
+  // Cycling: mechanical work at ~24% gross efficiency -> metabolic cost.
+  const kcal = isRun ? joules / 4184 : (joules / 0.24) / 4184;
+  return { seconds, kcal };
+}
+
+/* ==========================================================================
+   7. FUELING MODEL
+
+   Population-level sports-nutrition guidelines, not individual prescription.
+   Carbohydrate is driven by duration; fluid and sodium scale with body weight,
+   temperature and effort.
+   ========================================================================== */
+
+function computeFueling(hours, weightKg, tempC, effort, salty, kind) {
+  // --- Carbohydrate, g/h, by duration band ---
+  let carbLo, carbHi;
+  if (hours < 1.25)      { carbLo = 0;  carbHi = 0;  }
+  else if (hours < 2)    { carbLo = 30; carbHi = 60; }
+  else if (hours <= 3)   { carbLo = 60; carbHi = 90; }
+  else                   { carbLo = 80; carbHi = 100; }
+
+  // Running tolerates less than cycling — less stable gut, more jostling.
+  if (kind === "run" && carbHi > 0) {
+    carbLo = Math.max(30, Math.round(carbLo * 0.9));
+    carbHi = Math.max(40, Math.round(carbHi * 0.9));
+  }
+  const carbPerH = (carbLo + carbHi) / 2;
+
+  // --- Fluid, ml/h: ~7 ml/kg/h baseline, adjusted for heat and effort ---
+  let fluidPerH = weightKg * 7;
+  if (tempC < 5)        fluidPerH *= 0.7;
+  else if (tempC < 10)  fluidPerH *= 0.8;
+  else if (tempC < 20)  fluidPerH *= 1.0;
+  else if (tempC < 25)  fluidPerH *= 1.2;
+  else                  fluidPerH *= 1.45;
+
+  fluidPerH *= effort === "easy" ? 0.85 : effort === "hard" ? 1.15 : 1.0;
+  fluidPerH = clamp(fluidPerH, 300, 1000);
+
+  // --- Sodium, mg per litre of fluid ---
+  const sodiumPerL = salty ? 900 : 500;
+
+  const totalCarb   = carbPerH * hours;
+  const totalFluidL = fluidPerH * hours / 1000;
+  const totalSodium = totalFluidL * sodiumPerL;
+
+  return {
+    carbLo, carbHi, carbPerH, totalCarb,
+    fluidPerH, totalFluidL,
+    sodiumPerL, totalSodium,
+    // Practical translation: a 500 ml bottle of sports drink ~30 g carbs, a gel ~25 g.
+    bottles: Math.ceil(totalFluidL / 0.5),
+    gels: carbPerH > 0 ? Math.max(0, Math.round((totalCarb - Math.ceil(totalFluidL / 0.5) * 30) / 25)) : 0
+  };
+}
+
+function formatDuration(sec) {
+  const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+  return m === 60 ? `${h + 1}h 00m` : `${h}h ${String(m).padStart(2, "0")}m`;
+}
+
+/* ==========================================================================
+   8. MAP
+   ========================================================================== */
+
+const map = L.map("map", { center: [61.0, 9.5], zoom: 6, zoomControl: true });
+
+const baseLayers = {
+  "Kartverket topo": L.tileLayer(
+    "https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png",
+    { maxZoom: 18, attribution: "&copy; Kartverket" }),
+  "Kartverket grey": L.tileLayer(
+    "https://cache.kartverket.no/v1/wmts/1.0.0/topograatone/default/webmercator/{z}/{y}/{x}.png",
+    { maxZoom: 18, attribution: "&copy; Kartverket" }),
+  "OpenStreetMap": L.tileLayer(
+    "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" })
+};
+baseLayers["Kartverket topo"].addTo(map);
+L.control.layers(baseLayers, null, { position: "topright" }).addTo(map);
+
+const routeLine = L.polyline([], { color: "var(--route)", weight: 5, opacity: .85 }).addTo(map);
+// Leaflet doesn't resolve CSS variables in SVG stroke, so set the real colour.
+routeLine.setStyle({ color: "#e5342b" });
+
+const markerLayer = L.layerGroup().addTo(map);
+const hoverMarker = L.circleMarker([0, 0], {
+  radius: 6, color: "#fff", weight: 2, fillColor: "#e5342b", fillOpacity: 1
+});
+
+map.on("click", e => {
+  state.waypoints.push({ lat: e.latlng.lat, lng: e.latlng.lng });
+  const i = state.waypoints.length - 2;
+  recalculate(i >= 0 ? [i] : []);
+});
+
+function drawMarkers() {
+  markerLayer.clearLayers();
+  state.waypoints.forEach((wp, i) => {
+    const isEnd = i === 0 || i === state.waypoints.length - 1;
+    const label = i === 0 ? "S" : (i === state.waypoints.length - 1 ? "F" : String(i));
+    const marker = L.marker([wp.lat, wp.lng], {
+      draggable: true,
+      icon: L.divIcon({
+        className: "",
+        html: `<div class="wp-label" style="background:${isEnd ? "#067d3d" : "#2563eb"}">${label}</div>`,
+        iconSize: [22, 22], iconAnchor: [11, 11]
+      })
+    });
+
+    marker.on("dragend", ev => {
+      const p = ev.target.getLatLng();
+      state.waypoints[i] = { lat: p.lat, lng: p.lng };
+      // Only the legs on either side of this waypoint are invalidated.
+      if (i - 1 >= 0) state.legs[i - 1] = null;
+      if (i < state.legs.length) state.legs[i] = null;
+      recalculate([i - 1, i]);
+    });
+
+    marker.on("click", ev => {
+      L.DomEvent.stopPropagation(ev);
+      removeWaypoint(i);
+    });
+
+    markerLayer.addLayer(marker);
+  });
+}
+
+function removeWaypoint(i) {
+  state.waypoints.splice(i, 1);
+  // Removing a waypoint joins its two neighbouring legs into one new leg.
+  state.legs.splice(Math.max(0, i - 1), 2, null);
+  recalculate();
+}
+
+/* ==========================================================================
+   9. ELEVATION PROFILE CHART
+
+   Hand-drawn SVG — no charting library, so there is no extra CDN dependency
+   and the page still works from a plain file:// open.
+   ========================================================================== */
+
+function drawProfile() {
+  const panel = $("profile-panel"), svg = $("profile-svg"), tip = $("profile-tip");
+  const s = state.stats;
+
+  if (!s || state.coords.length < 2) { panel.classList.add("empty"); return; }
+  panel.classList.remove("empty");
+
+  const W = panel.clientWidth, H = panel.clientHeight;
+  const pad = { t: 12, r: 12, b: 20, l: 44 };
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+
+  const totalD = s.distance;
+  const lo = Math.floor(s.minEle / 10) * 10;
+  const hi = Math.ceil(s.maxEle / 10) * 10;
+  const span = Math.max(10, hi - lo);
+
+  const x = d => pad.l + (d / totalD) * iw;
+  const y = e => pad.t + ih - ((e - lo) / span) * ih;
+
+  // Downsample to roughly one point per pixel; more than that is invisible anyway.
+  const step = Math.max(1, Math.floor(state.coords.length / Math.max(1, iw)));
+  const pts = [];
+  for (let i = 0; i < state.coords.length; i += step) pts.push([x(s.cum[i]), y(state.coords[i][2]), i]);
+  const last = state.coords.length - 1;
+  pts.push([x(s.cum[last]), y(state.coords[last][2]), last]);
+
+  const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
+  const area = `${line}L${pad.l + iw},${pad.t + ih}L${pad.l},${pad.t + ih}Z`;
+
+  const ticks = [lo, lo + span / 2, hi].map(e =>
+    `<line x1="${pad.l}" y1="${y(e)}" x2="${pad.l + iw}" y2="${y(e)}" stroke="#e0e0e3" stroke-width="1"/>
+     <text x="${pad.l - 6}" y="${y(e) + 3}" text-anchor="end" font-size="10" fill="#6b7280">${Math.round(e)}</text>`
+  ).join("");
+
+  const xLabels = [0, .25, .5, .75, 1].map(f =>
+    `<text x="${x(totalD * f)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="#6b7280">${
+      round(totalD * f / 1000, 1)}</text>`
+  ).join("");
+
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = `
+    ${ticks}
+    <path d="${area}" fill="#e5342b" opacity=".13"/>
+    <path d="${line}" fill="none" stroke="#e5342b" stroke-width="1.8"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    ${xLabels}
+    <text x="${pad.l + iw / 2}" y="11" text-anchor="middle" font-size="10" fill="#6b7280">km</text>
+    <line id="prof-cursor" x1="0" y1="${pad.t}" x2="0" y2="${pad.t + ih}"
+          stroke="#18181b" stroke-width="1" opacity="0"/>
+  `;
+
+  // --- Hover: link chart position to a marker on the map ---
+  svg.onmousemove = ev => {
+    const rect = svg.getBoundingClientRect();
+    const px = (ev.clientX - rect.left) * (W / rect.width);
+    if (px < pad.l || px > pad.l + iw) return;
+
+    const dist = ((px - pad.l) / iw) * totalD;
+    let idx = 0;
+    while (idx < s.cum.length - 1 && s.cum[idx] < dist) idx++;
+
+    const c = state.coords[idx];
+    const cursor = svg.querySelector("#prof-cursor");
+    cursor.setAttribute("x1", px); cursor.setAttribute("x2", px);
+    cursor.setAttribute("opacity", ".45");
+
+    tip.style.opacity = 1;
+    tip.style.left = ((px / W) * rect.width) + "px";
+    tip.style.top = (y(c[2]) / H) * rect.height + "px";
+    tip.textContent = `${round(dist / 1000, 2)} km · ${Math.round(c[2])} m`;
+
+    hoverMarker.setLatLng([c[1], c[0]]);
+    if (!map.hasLayer(hoverMarker)) hoverMarker.addTo(map);
+  };
+
+  svg.onmouseleave = () => {
+    tip.style.opacity = 0;
+    const cursor = svg.querySelector("#prof-cursor");
+    if (cursor) cursor.setAttribute("opacity", "0");
+    if (map.hasLayer(hoverMarker)) map.removeLayer(hoverMarker);
+  };
+}
+
+/* ==========================================================================
+   10. GPX EXPORT
+   ========================================================================== */
+
+function toGPX(coords, name) {
+  const esc = str => String(str).replace(/[<>&'"]/g,
+    c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]));
+  const pts = coords.map(c =>
+    `      <trkpt lat="${c[1].toFixed(6)}" lon="${c[0].toFixed(6)}"><ele>${c[2].toFixed(1)}</ele></trkpt>`
+  ).join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Route Planner" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata><name>${esc(name)}</name><time>${new Date().toISOString()}</time></metadata>
+  <trk>
+    <name>${esc(name)}</name>
+    <trkseg>
+${pts}
+    </trkseg>
+  </trk>
+</gpx>`;
+}
+
+function downloadGPX() {
+  if (!state.coords.length) return;
+  const name = prompt("Name for this route:", `${state.activity.label} ${round(state.stats.distance / 1000, 1)} km`);
+  if (name === null) return;
+  const blob = new Blob([toGPX(state.coords, name || "Route")], { type: "application/gpx+xml" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (name || "route").replace(/[^\w\-. ]+/g, "_") + ".gpx";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ==========================================================================
+   11. SAVED ROUTES (localStorage)
+
+   Geometry is stored alongside the waypoints so reloading a saved route needs
+   no network calls at all.
+   ========================================================================== */
+
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+  catch { return []; }
+}
+
+function writeSaved(list) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+    return true;
+  } catch (err) {
+    setStatus("Could not save — browser storage is full.", "error");
+    return false;
+  }
+}
+
+function saveCurrent() {
+  if (!state.coords.length) return;
+  const name = prompt("Name for this route:", `${state.activity.label} ${round(state.stats.distance / 1000, 1)} km`);
+  if (!name) return;
+
+  const list = loadSaved();
+  list.unshift({
+    id: Date.now(),
+    name,
+    activity: state.activity.key,
+    snap: state.snap,
+    waypoints: state.waypoints,
+    // Stored per leg, not as one merged line, so that editing a waypoint after
+    // reloading only invalidates its two neighbouring legs — exactly as if the
+    // route had just been drawn.
+    legs: state.legs.map(leg =>
+      (leg || []).map(c => [round(c[0], 6), round(c[1], 6), round(c[2], 1)])),
+    distance: state.stats.distance,
+    ascent: state.stats.ascent,
+    savedAt: new Date().toISOString()
+  });
+  if (writeSaved(list)) {
+    renderSaved();
+    setStatus(`Saved "${name}".`, "ok");
+    setTimeout(() => setStatus(""), 2500);
+  }
+}
+
+function restoreRoute(id) {
+  const entry = loadSaved().find(r => r.id === id);
+  if (!entry) return;
+
+  const activity = ACTIVITIES.find(a => a.key === entry.activity) || ACTIVITIES[0];
+  state.activity = activity;
+  state.snap = entry.snap !== false;
+  state.waypoints = entry.waypoints.map(w => ({ lat: w.lat, lng: w.lng }));
+  state.legs = entry.legs.map(leg => leg.map(c => c.slice()));
+
+  // Seed the cache with the stored legs so a later edit reuses them instead of
+  // re-routing — loading a saved route makes no network requests at all.
+  state.legs.forEach((leg, i) => {
+    if (!leg.length) return;
+    legCache.set(legKey(state.waypoints[i], state.waypoints[i + 1], activity.profile, state.snap), leg);
+  });
+
+  mergeLegs();
+
+  $("activity").value = activity.key;
+  $("snap").checked = state.snap;
+  syncPaceField();
+  render();
+  if (state.coords.length) {
+    map.fitBounds(L.latLngBounds(state.coords.map(c => [c[1], c[0]])), { padding: [30, 30] });
+  }
+  setStatus(`Loaded "${entry.name}".`, "ok");
+  setTimeout(() => setStatus(""), 2000);
+}
+
+function deleteRoute(id) {
+  writeSaved(loadSaved().filter(r => r.id !== id));
+  renderSaved();
+}
+
+function renderSaved() {
+  const list = loadSaved(), ul = $("saved-list");
+  ul.innerHTML = "";
+  if (!list.length) {
+    ul.innerHTML = '<li class="empty-msg">No saved routes yet.</li>';
+    return;
+  }
+  list.forEach(r => {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = r.name;
+    name.title = "Load this route";
+    name.onclick = () => restoreRoute(r.id);
+
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = `${round(r.distance / 1000, 1)} km · ${Math.round(r.ascent)} m`;
+
+    const del = document.createElement("button");
+    del.textContent = "×";
+    del.title = "Delete";
+    del.onclick = () => { if (confirm(`Delete "${r.name}"?`)) deleteRoute(r.id); };
+
+    li.append(name, meta, del);
+    ul.appendChild(li);
+  });
+}
+
+/* ==========================================================================
+   12. RENDERING
+   ========================================================================== */
+
+function render() {
+  drawMarkers();
+  routeLine.setLatLngs(state.coords.map(c => [c[1], c[0]]));
+
+  const has = state.coords.length > 1;
+  ["undo", "clear", "reverse"].forEach(id => { $(id).disabled = !state.waypoints.length; });
+  $("gpx").disabled = !has;
+  $("save").disabled = !has;
+
+  renderStats();
+  renderFueling();
+  drawProfile();
+}
+
+function renderStats() {
+  const s = state.stats, el = $("stats");
+  if (!s) {
+    el.innerHTML = '<p class="empty-msg" style="grid-column:1/-1">Click the map to start drawing.</p>';
+    return;
+  }
+  const effort = currentEffort();
+  el.innerHTML = `
+    <div class="stat"><div class="v">${round(s.distance / 1000, 2)} km</div><div class="l">Distance</div></div>
+    <div class="stat"><div class="v">${Math.round(s.ascent)} m</div><div class="l">Elevation gain</div></div>
+    <div class="stat"><div class="v">${Math.round(s.descent)} m</div><div class="l">Elevation loss</div></div>
+    <div class="stat">
+      <div class="v">${effort ? formatDuration(effort.seconds) : "—"}</div>
+      <div class="l">Est. moving time</div>
+    </div>
+  `;
+}
+
+function currentEffort() {
+  if (!state.coords.length) return null;
+  const weight = Number($("weight").value) || 75;
+  const input = Number($("pace").value) || (state.activity.kind === "run" ? 5.5 : 25);
+  return estimateEffort(state.coords, state.activity, input, weight);
+}
+
+function renderFueling() {
+  const out = $("fuel-out");
+  const effort = currentEffort();
+  if (!effort) {
+    out.innerHTML = '<p class="empty-msg">Draw a route to see a fueling plan.</p>';
+    return;
+  }
+
+  const hours = effort.seconds / 3600;
+  const weight = Number($("weight").value) || 75;
+  const temp = Number($("temp").value);
+  const f = computeFueling(hours, weight, isNaN(temp) ? 15 : temp,
+                           $("effort").value, $("salty").checked, state.activity.kind);
+
+  if (f.carbPerH === 0) {
+    out.innerHTML = `
+      <div class="line"><span>Estimated energy burn</span><b>${Math.round(effort.kcal)} kcal</b></div>
+      <div class="line"><span>Fluid</span><b>${Math.round(f.fluidPerH)} ml/h · ${round(f.totalFluidL, 2)} L total</b></div>
+      <div class="line"><span>Carbohydrate</span><b>Not needed</b></div>
+      <div class="hint">Under about 75 minutes you have enough stored glycogen — water is usually enough.</div>
+      ${disclaimer()}`;
+    return;
+  }
+
+  const rows = [];
+  const fullHours = Math.floor(hours);
+  for (let h = 1; h <= fullHours; h++) {
+    rows.push(`<tr><td>Hour ${h}</td><td>${Math.round(f.carbPerH)}</td>
+      <td>${Math.round(f.fluidPerH)}</td><td>${Math.round(f.fluidPerH / 1000 * f.sodiumPerL)}</td></tr>`);
+  }
+  const rem = hours - fullHours;
+  if (rem > 0.08) {
+    rows.push(`<tr><td>Final ${Math.round(rem * 60)} min</td><td>${Math.round(f.carbPerH * rem)}</td>
+      <td>${Math.round(f.fluidPerH * rem)}</td><td>${Math.round(f.fluidPerH * rem / 1000 * f.sodiumPerL)}</td></tr>`);
+  }
+
+  out.innerHTML = `
+    <div class="line"><span>Estimated energy burn</span><b>${Math.round(effort.kcal)} kcal</b></div>
+    <div class="line"><span>Carbohydrate</span><b>${f.carbLo}–${f.carbHi} g/h · ${Math.round(f.totalCarb)} g total</b></div>
+    <div class="line"><span>Fluid</span><b>${Math.round(f.fluidPerH)} ml/h · ${round(f.totalFluidL, 2)} L total</b></div>
+    <div class="line"><span>Sodium</span><b>${f.sodiumPerL} mg/L · ${Math.round(f.totalSodium)} mg total</b></div>
+    <div class="line">
+      <span>Roughly<br><span class="hint">assuming sports drink, ~30 g carbs per bottle</span></span>
+      <b>${f.bottles} × 500 ml bottle${f.bottles === 1 ? "" : "s"}${
+        f.gels > 0 ? `<br>+ ${f.gels} gel${f.gels === 1 ? "" : "s"}` : ""}</b>
+    </div>
+    <table class="hourly">
+      <thead><tr><th>Segment</th><th>Carbs (g)</th><th>Fluid (ml)</th><th>Sodium (mg)</th></tr></thead>
+      <tbody>${rows.join("")}</tbody>
+    </table>
+    ${f.carbPerH >= 80 ? '<div class="note">Above about 80 g/h you need multiple carb sources (glucose + fructose) and a gut trained for it. Build up gradually.</div>' : ""}
+    ${disclaimer()}`;
+}
+
+function disclaimer() {
+  return `<div class="note"><b>These are general guidelines, not medical or individual advice.</b>
+    Sweat rate, sodium loss and gut tolerance vary enormously between people — two athletes of the
+    same weight can differ two-fold. Treat this as a starting point and test it in training,
+    never for the first time on race day.</div>`;
+}
+
+/* ==========================================================================
+   13. UI WIRING
+   ========================================================================== */
+
+function syncPaceField() {
+  const a = state.activity;
+  const isRun = a.kind === "run";
+  $("pace-label").textContent = isRun ? "Flat pace (min/km)" : "Flat speed (km/h)";
+  const input = $("pace");
+  input.value = isRun ? a.pace : a.speed;
+  input.step = isRun ? 0.1 : 1;
+  input.min = isRun ? 2 : 5;
+  input.max = isRun ? 30 : 60;
+}
+
+(function initActivitySelect() {
+  const sel = $("activity");
+  ACTIVITIES.forEach(a => sel.add(new Option(a.label, a.key)));
+  sel.value = state.activity.key;
+  syncPaceField();
+})();
+
+$("activity").onchange = e => {
+  state.activity = ACTIVITIES.find(a => a.key === e.target.value);
+  syncPaceField();
+  // Profile changed, so every leg has to be re-routed.
+  state.legs = state.legs.map(() => null);
+  recalculate();
+};
+
+$("snap").onchange = e => {
+  state.snap = e.target.checked;
+  state.legs = state.legs.map(() => null);
+  recalculate();
+};
+
+$("undo").onclick = () => {
+  if (!state.waypoints.length) return;
+  state.waypoints.pop();
+  state.legs.pop();
+  recalculate();
+};
+
+$("clear").onclick = () => {
+  state.waypoints = [];
+  state.legs = [];
+  state.coords = [];
+  state.stats = null;
+  render();
+};
+
+$("reverse").onclick = () => {
+  state.waypoints.reverse();
+  state.legs = state.legs.map(() => null);
+  recalculate();
+};
+
+$("gpx").onclick = downloadGPX;
+$("save").onclick = saveCurrent;
+
+// Fueling inputs only affect the calculation, never the route — recompute locally.
+["weight", "pace", "temp", "effort", "salty"].forEach(id => {
+  $(id).addEventListener("input", () => { renderStats(); renderFueling(); });
+});
+
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(drawProfile, 150);
+});
+
+renderSaved();
+render();
+</script>
+</body>
+</html>

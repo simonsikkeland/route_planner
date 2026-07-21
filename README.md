@@ -32,7 +32,8 @@ host. That's the whole deployment.
   point, or toggle any existing segment in the list.
 - **Fueling plan** — carbohydrate, fluid and sodium, scaled to body weight, estimated
   duration, temperature and effort.
-- **GPX export** for Garmin / Wahoo / Strava.
+- **GPX export** for Garmin / Wahoo / Strava — one continuous track segment, ferries
+  included, so devices import the whole trip.
 - **Save routes** in the browser (see the caveat below).
 - Click the map to add points, drag markers to reshape, click a marker to delete it.
 - **Shape a route mid-way** — grab the route line anywhere and drag it onto the road you
@@ -149,6 +150,11 @@ clamped to 300–1000 ml/h. Sodium is 500 mg/L, or 900 mg/L for salty sweaters.
   and still produces a route.
 - Sea depth: the Moss–Horten ferry crossing reads 8 m climb / 0 m low point, against
   185 m / −167 m before the fix.
+- GPX structure: a route with three ferries exports as a single `<trkseg>` containing
+  every point, and the distance reconstructed from the file matches the route. An earlier
+  version split transport legs into separate `<trkseg>` elements, which Garmin imported
+  as only the first segment — a three-ferry route arrived as 17% of itself. Keep it one
+  segment.
 - Long routes: a 155 km route exports all 5847 points, and reconstructing distance from
   the downloaded GPX gives back 155.4 km. A synthetic 400 km / 40 000-point route exports
   complete at 2.66 MB. Saving a 150 km route uses ~0.15 MB of `localStorage`, so roughly

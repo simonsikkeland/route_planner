@@ -1658,37 +1658,31 @@ function refreshPreview() {
    10. GPX EXPORT
    ========================================================================== */
 
-function toGPX(coords, name, segT = []) {
+/**
+ * One track, ONE <trkseg>, every point.
+ *
+ * Transport legs used to be split into their own <trkseg> so a device wouldn't
+ * fold a ferry into the ride. That broke real imports: Garmin reads the first
+ * segment and stops, so a route with three ferries arrived as 17% of itself —
+ * everything up to the first crossing. A single continuous segment is what
+ * devices expect, and correctness beats the annotation.
+ */
+function toGPX(coords, name) {
   const esc = str => String(str).replace(/[<>&'"]/g,
     c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]));
-  const pt = c =>
-    `      <trkpt lat="${c[1].toFixed(6)}" lon="${c[0].toFixed(6)}"><ele>${c[2].toFixed(1)}</ele></trkpt>`;
 
-  // Transport legs go into their own <trkseg>. Devices then draw the crossing but
-  // treat it as a separate segment, rather than folding a ferry into your ride.
-  const segs = [];
-  let current = [], currentT = false;
-  coords.forEach((c, i) => {
-    const t = !!segT[i];
-    if (i > 0 && t !== currentT) {
-      current.push(c);
-      segs.push({ transport: currentT, pts: current });
-      current = [c]; currentT = t;
-    } else {
-      if (i === 0) currentT = !!segT[1];
-      current.push(c);
-    }
-  });
-  if (current.length > 1) segs.push({ transport: currentT, pts: current });
-
-  const body = segs.map(s => `    <trkseg>\n${s.pts.map(pt).join("\n")}\n    </trkseg>`).join("\n");
+  const pts = coords.map(c =>
+    `      <trkpt lat="${c[1].toFixed(6)}" lon="${c[0].toFixed(6)}"><ele>${c[2].toFixed(1)}</ele></trkpt>`
+  ).join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="Route Planner" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata><name>${esc(name)}</name><time>${new Date().toISOString()}</time></metadata>
   <trk>
     <name>${esc(name)}</name>
-${body}
+    <trkseg>
+${pts}
+    </trkseg>
   </trk>
 </gpx>`;
 }
@@ -1697,7 +1691,7 @@ function downloadGPX() {
   if (!state.coords.length) return;
   const name = prompt("Name for this route:", `${state.activity.label} ${round(state.stats.distance / 1000, 1)} km`);
   if (name === null) return;
-  const blob = new Blob([toGPX(state.coords, name || "Route", state.segTransport)],
+  const blob = new Blob([toGPX(state.coords, name || "Route")],
                         { type: "application/gpx+xml" });
 
   const url = URL.createObjectURL(blob);

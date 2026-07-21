@@ -125,6 +125,20 @@ table.hourly td:first-child, table.hourly th:first-child { text-align: left; }
 #saved-list .name { flex: 1; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #saved-list .name:hover { color: var(--accent); text-decoration: underline; }
 #saved-list .meta { font-size: 11px; color: var(--muted); }
+
+/* --- Segment list --- */
+#seg-list { list-style: none; margin: 10px 0 0; padding: 0; }
+#seg-list li {
+  display: flex; align-items: center; gap: 6px; padding: 4px 0;
+  border-bottom: 1px solid var(--border); font-size: 12px;
+}
+#seg-list .seg-name { flex: 1; color: var(--muted); }
+#seg-list .seg-dist { font-variant-numeric: tabular-nums; }
+#seg-list button { padding: 2px 8px; font-size: 11px; white-space: nowrap; }
+#seg-list button.on {
+  background: #f3ecff; border-color: #7c3aed; color: #5b21b6; font-weight: 600;
+}
+.transport-note { color: #5b21b6; }
 #saved-list button { padding: 2px 7px; font-size: 11px; }
 .empty-msg { color: var(--muted); font-size: 12px; font-style: italic; }
 
@@ -178,6 +192,15 @@ footer a { color: var(--muted); }
   <p class="hint" style="font-size:11px;color:var(--muted);margin:8px 0 0">
     Click the map to add points. Drag a marker to move it, click a marker to delete it.
   </p>
+
+  <div class="field" style="margin-top:12px">
+    <label><input type="checkbox" id="next-transport" style="width:auto">
+      Next segment is transport</label>
+    <div class="hint" style="font-size:11px;color:var(--muted)">
+      Ferry, train or lift. Drawn dashed, and left out of distance, climb and fueling.
+    </div>
+  </div>
+  <ul id="seg-list"></ul>
 
   <h2>Stats</h2>
   <div id="stats"></div>
@@ -278,9 +301,12 @@ const STORAGE_KEY = "routeplanner.routes.v1";
 const state = {
   waypoints: [],   // [{lat, lng}]
   legs: [],        // legs[i] = coords from waypoint i to i+1, or null while loading
+  transport: [],   // transport[i] = true if leg i is a ferry/train/lift (not travelled under your own power)
   activity: ACTIVITIES[0],
   snap: true,
+  nextTransport: false,  // mark the next leg drawn as transport
   coords: [],      // merged [[lon, lat, ele], ...] for the whole route
+  segTransport: [],// segTransport[j] = true if the segment ENDING at coords[j] is transport
   stats: null,
   busy: 0,
   notice: null     // non-fatal warning to show once routing settles
@@ -377,22 +403,33 @@ function straightLeg(from, to) {
   return pts;
 }
 
-function legKey(from, to, profile, snap) {
+function legKey(from, to, profile, snap, transport) {
   const f = `${from.lat.toFixed(6)},${from.lng.toFixed(6)}`;
   const t = `${to.lat.toFixed(6)},${to.lng.toFixed(6)}`;
-  return `${snap ? profile : "straight"}|${f}|${t}`;
+  const mode = transport ? "transport" : (snap ? profile : "straight");
+  return `${mode}|${f}|${t}`;
 }
 
 /** Fetch (or reuse) the leg between waypoints i and i+1, including refined elevation. */
 async function buildLeg(i) {
   const from = state.waypoints[i], to = state.waypoints[i + 1];
-  const key = legKey(from, to, state.activity.profile, state.snap);
+  const transport = !!state.transport[i];
+  const key = legKey(from, to, state.activity.profile, state.snap, transport);
 
   if (legCache.has(key)) { state.legs[i] = legCache.get(key); return; }
 
-  const coords = state.snap
-    ? await routeLeg(from, to, state.activity.profile)
-    : straightLeg(from, to);
+  let coords;
+  if (transport) {
+    // A ferry, train or lift is not routed: a train line isn't in the cycling
+    // graph at all, and a ferry may not be mapped. Just connect the two points —
+    // the leg is excluded from every calculation anyway, so only its endpoints
+    // matter, and those sit on land where Kartverket has real elevations.
+    coords = [[from.lng, from.lat, 0], [to.lng, to.lat, 0]];
+  } else {
+    coords = state.snap
+      ? await routeLeg(from, to, state.activity.profile)
+      : straightLeg(from, to);
+  }
 
   await refineElevation(coords);
   legCache.set(key, coords);
@@ -403,8 +440,9 @@ async function buildLeg(i) {
 async function recalculate() {
   const needed = state.waypoints.length - 1;
   state.legs.length = Math.max(0, needed);
+  state.transport.length = Math.max(0, needed);
 
-  if (needed < 1) { state.coords = []; state.stats = null; render(); return; }
+  if (needed < 1) { state.coords = []; state.segTransport = []; state.stats = null; render(); return; }
 
   let error = null;
   state.notice = null;
@@ -433,16 +471,24 @@ async function recalculate() {
   }
 }
 
-/** Concatenate legs into one coordinate array, dropping the duplicated joint points. */
+/**
+ * Concatenate legs into one coordinate array, dropping the duplicated joint points,
+ * and record which segments belong to a transport leg so they can be excluded.
+ */
 function mergeLegs() {
-  const merged = [];
+  const merged = [], segT = [];
   state.legs.forEach((leg, i) => {
-    if (!leg) return;
-    const start = i === 0 ? 0 : 1;
-    for (let j = start; j < leg.length; j++) merged.push(leg[j]);
+    if (!leg || !leg.length) return;
+    const isTransport = !!state.transport[i];
+    const start = merged.length === 0 ? 0 : 1;
+    for (let j = start; j < leg.length; j++) {
+      merged.push(leg[j]);
+      segT.push(isTransport);   // describes the segment ending at this point
+    }
   });
   state.coords = merged;
-  state.stats = computeStats(merged);
+  state.segTransport = segT;
+  state.stats = computeStats(merged, segT);
 }
 
 /* ==========================================================================
@@ -480,15 +526,29 @@ async function refineElevation(coords) {
     });
 
     let missing = 0;
+    const seaIdx = [];
     batches.forEach((batch, b) => {
       const got = results[b];
       batch.forEach((coordIdx, k) => {
-        const z = got[k] && got[k].z;
-        // Outside Norwegian coverage Kartverket returns z:null — keep BRouter's value.
-        if (typeof z === "number") coords[coordIdx][2] = z;
+        const p = got[k];
+        // Over water Kartverket returns the SEABED DEPTH, not a surface height —
+        // Sognefjord comes back as -1080 m. Using it would send a ferry crossing
+        // (or a bridge over a fjord) to the bottom of the sea and back up.
+        if (p && (p.datakilde === "dybdekurver" || p.terreng === "Havflate")) {
+          seaIdx.push(coordIdx);
+          return;
+        }
+        // Outside Norwegian coverage Kartverket returns z:null — keep BRouter's value,
+        // which is a real (if coarser) terrain estimate rather than a depth.
+        if (p && typeof p.z === "number") coords[coordIdx][2] = p.z;
         else missing++;
       });
     });
+
+    // Bridge the water. BRouter's SRTM reads roughly sea level over water, so simply
+    // keeping it would make a high bridge dip to 0 m and climb back. Interpolating
+    // between the land on either side is right for a bridge and harmless for a ferry.
+    if (seaIdx.length) bridgeWater(coords, seaIdx);
 
     // If we sampled sparsely, interpolate the untouched points so the profile stays smooth.
     if (coords.length > KV_MAX_POINTS) interpolateGaps(coords, idx);
@@ -503,6 +563,33 @@ async function refineElevation(coords) {
   } catch (err) {
     // Elevation refinement is an enhancement, not a requirement: keep BRouter's numbers.
     console.warn("Kartverket elevation unavailable, using BRouter SRTM:", err);
+  }
+}
+
+/**
+ * Replace elevations at over-water points by interpolating across the gap from
+ * the nearest land elevation on each side. Where a crossing runs to the very
+ * start or end of the route, the nearest known land height is carried across.
+ */
+function bridgeWater(coords, seaIdx) {
+  const isSea = new Set(seaIdx);
+
+  // Walk each contiguous run of water points and interpolate across it.
+  for (let i = 0; i < coords.length; i++) {
+    if (!isSea.has(i)) continue;
+    let end = i;
+    while (end + 1 < coords.length && isSea.has(end + 1)) end++;
+
+    const before = i - 1 >= 0 ? coords[i - 1][2] : null;
+    const after = end + 1 < coords.length ? coords[end + 1][2] : null;
+
+    for (let k = i; k <= end; k++) {
+      if (before === null && after === null) coords[k][2] = 0;          // all water
+      else if (before === null) coords[k][2] = after;
+      else if (after === null) coords[k][2] = before;
+      else coords[k][2] = before + (after - before) * ((k - i + 1) / (end - i + 2));
+    }
+    i = end;
   }
 }
 
@@ -526,27 +613,34 @@ function interpolateGaps(coords, sampled) {
  *
  * Ascent uses hysteresis: climb only counts once it exceeds ELEV_THRESHOLD from
  * the last committed reference height, which suppresses data jitter.
+ *
+ * Transport segments (ferry, train, lift) contribute to neither distance nor
+ * climb — you aren't moving under your own power — and the climb reference is
+ * reset across them so the step in height at a crossing isn't counted either.
  */
-function computeStats(coords) {
+function computeStats(coords, segT = []) {
   if (coords.length < 2) return null;
 
-  let distance = 0;
+  let distance = 0, transportDistance = 0;
   const cum = [0];
   for (let i = 1; i < coords.length; i++) {
-    distance += haversine(coords[i - 1], coords[i]);
-    cum.push(distance);
+    const d = haversine(coords[i - 1], coords[i]);
+    if (segT[i]) transportDistance += d;
+    else distance += d;
+    cum.push(distance);   // x-axis is distance actually travelled
   }
 
   let ascent = 0, descent = 0, ref = coords[0][2];
-  for (const c of coords) {
-    const d = c[2] - ref;
-    if (d > ELEV_THRESHOLD) { ascent += d; ref = c[2]; }
-    else if (d < -ELEV_THRESHOLD) { descent -= d; ref = c[2]; }
+  for (let i = 1; i < coords.length; i++) {
+    if (segT[i]) { ref = coords[i][2]; continue; }
+    const d = coords[i][2] - ref;
+    if (d > ELEV_THRESHOLD) { ascent += d; ref = coords[i][2]; }
+    else if (d < -ELEV_THRESHOLD) { descent -= d; ref = coords[i][2]; }
   }
 
   const eles = coords.map(c => c[2]);
   return {
-    distance, ascent, descent, cum,
+    distance, transportDistance, ascent, descent, cum,
     minEle: Math.min(...eles),
     maxEle: Math.max(...eles)
   };
@@ -632,7 +726,7 @@ function bikeSpeedAt(gradient, power, massKg, maxSpeedMs, coeff) {
  * Estimated moving time (seconds) and energy expenditure (kcal) for the route,
  * walking segment by segment so that gradient is accounted for properly.
  */
-function estimateEffort(coords, activity, input, weightKg) {
+function estimateEffort(coords, activity, input, weightKg, segT = []) {
   if (!coords || coords.length < 2) return null;
 
   const isRun = activity.kind === "run";
@@ -647,6 +741,7 @@ function estimateEffort(coords, activity, input, weightKg) {
   let seconds = 0, joules = 0;
 
   for (let i = 1; i < coords.length; i++) {
+    if (segT[i]) continue;                             // sitting on a ferry costs no effort
     const d = haversine(coords[i - 1], coords[i]);
     if (d < 0.5) continue;                             // skip near-duplicate nodes
     const grade = clamp((coords[i][2] - coords[i - 1][2]) / d, -0.5, 0.5);
@@ -747,19 +842,30 @@ const baseLayers = {
 baseLayers["Kartverket topo"].addTo(map);
 L.control.layers(baseLayers, null, { position: "topright" }).addTo(map);
 
-const routeLine = L.polyline([], { color: "var(--route)", weight: 5, opacity: .85 }).addTo(map);
-// Leaflet doesn't resolve CSS variables in SVG stroke, so set the real colour.
-routeLine.setStyle({ color: "#e5342b" });
-
+// Legs are drawn individually so transport legs can be styled differently.
+const routeLayer = L.layerGroup().addTo(map);
 const markerLayer = L.layerGroup().addTo(map);
+
+function drawRoute() {
+  routeLayer.clearLayers();
+  state.legs.forEach((leg, i) => {
+    if (!leg || leg.length < 2) return;
+    const latlngs = leg.map(c => [c[1], c[0]]);
+    const style = state.transport[i]
+      ? { color: "#7c3aed", weight: 4, opacity: .9, dashArray: "10,8" }
+      : { color: "#e5342b", weight: 5, opacity: .85 };
+    L.polyline(latlngs, style).addTo(routeLayer);
+  });
+}
 const hoverMarker = L.circleMarker([0, 0], {
   radius: 6, color: "#fff", weight: 2, fillColor: "#e5342b", fillOpacity: 1
 });
 
 map.on("click", e => {
   state.waypoints.push({ lat: e.latlng.lat, lng: e.latlng.lng });
-  const i = state.waypoints.length - 2;
-  recalculate(i >= 0 ? [i] : []);
+  const newLeg = state.waypoints.length - 2;
+  if (newLeg >= 0 && state.nextTransport) state.transport[newLeg] = true;
+  recalculate();
 });
 
 function drawMarkers() {
@@ -796,8 +902,14 @@ function drawMarkers() {
 
 function removeWaypoint(i) {
   state.waypoints.splice(i, 1);
-  // Removing a waypoint joins its two neighbouring legs into one new leg.
-  state.legs.splice(Math.max(0, i - 1), 2, null);
+  // Removing a waypoint joins its two neighbouring legs into one new leg. The
+  // joined leg counts as transport only if both halves were.
+  const at = Math.max(0, i - 1);
+  const merged = i > 0 && i < state.legs.length
+    ? !!(state.transport[i - 1] && state.transport[i])
+    : !!state.transport[at];
+  state.legs.splice(at, 2, null);
+  state.transport.splice(at, 2, merged);
   recalculate();
 }
 
@@ -834,8 +946,43 @@ function drawProfile() {
   const last = state.coords.length - 1;
   pts.push([x(s.cum[last]), y(state.coords[last][2]), last]);
 
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
-  const area = `${line}L${pad.l + iw},${pad.t + ih}L${pad.l},${pad.t + ih}Z`;
+  // Break the trace wherever a transport leg sits, so a ferry reads as a step
+  // rather than a climb. Those segments add no distance, so the break is vertical.
+  const segT = state.segTransport;
+  const crossedTransport = (from, to) => {
+    for (let k = from + 1; k <= to; k++) if (segT[k]) return true;
+    return false;
+  };
+
+  let line = "", area = "";
+  const jumps = [];
+  pts.forEach((p, i) => {
+    const brk = i > 0 && crossedTransport(pts[i - 1][2], p[2]);
+    if (brk) jumps.push([p[0], pts[i - 1][1], p[1]]);
+    line += `${i === 0 || brk ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`;
+  });
+
+  // The filled area is drawn per continuous run so the fill doesn't span a break.
+  let runStart = 0;
+  pts.forEach((p, i) => {
+    const brk = i > 0 && crossedTransport(pts[i - 1][2], p[2]);
+    const isLast = i === pts.length - 1;
+    if (brk || isLast) {
+      const end = brk ? i - 1 : i;
+      if (end > runStart) {
+        const run = pts.slice(runStart, end + 1);
+        area += run.map((q, k) => `${k ? "L" : "M"}${q[0].toFixed(1)},${q[1].toFixed(1)}`).join("")
+              + `L${run[run.length - 1][0].toFixed(1)},${pad.t + ih}`
+              + `L${run[0][0].toFixed(1)},${pad.t + ih}Z`;
+      }
+      runStart = i;
+    }
+  });
+
+  const jumpMarks = jumps.map(([jx, y1, y2]) =>
+    `<line x1="${jx.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${jx.toFixed(1)}" y2="${y2.toFixed(1)}"
+           stroke="#7c3aed" stroke-width="2" stroke-dasharray="3,3"/>`
+  ).join("");
 
   const ticks = [lo, lo + span / 2, hi].map(e =>
     `<line x1="${pad.l}" y1="${y(e)}" x2="${pad.l + iw}" y2="${y(e)}" stroke="#e0e0e3" stroke-width="1"/>
@@ -853,6 +1000,7 @@ function drawProfile() {
     <path d="${area}" fill="#e5342b" opacity=".13"/>
     <path d="${line}" fill="none" stroke="#e5342b" stroke-width="1.8"
           stroke-linejoin="round" stroke-linecap="round"/>
+    ${jumpMarks}
     ${xLabels}
     <text x="${pad.l + iw / 2}" y="11" text-anchor="middle" font-size="10" fill="#6b7280">km</text>
     <line id="prof-cursor" x1="0" y1="${pad.t}" x2="0" y2="${pad.t + ih}"
@@ -895,21 +1043,37 @@ function drawProfile() {
    10. GPX EXPORT
    ========================================================================== */
 
-function toGPX(coords, name) {
+function toGPX(coords, name, segT = []) {
   const esc = str => String(str).replace(/[<>&'"]/g,
     c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]));
-  const pts = coords.map(c =>
-    `      <trkpt lat="${c[1].toFixed(6)}" lon="${c[0].toFixed(6)}"><ele>${c[2].toFixed(1)}</ele></trkpt>`
-  ).join("\n");
+  const pt = c =>
+    `      <trkpt lat="${c[1].toFixed(6)}" lon="${c[0].toFixed(6)}"><ele>${c[2].toFixed(1)}</ele></trkpt>`;
+
+  // Transport legs go into their own <trkseg>. Devices then draw the crossing but
+  // treat it as a separate segment, rather than folding a ferry into your ride.
+  const segs = [];
+  let current = [], currentT = false;
+  coords.forEach((c, i) => {
+    const t = !!segT[i];
+    if (i > 0 && t !== currentT) {
+      current.push(c);
+      segs.push({ transport: currentT, pts: current });
+      current = [c]; currentT = t;
+    } else {
+      if (i === 0) currentT = !!segT[1];
+      current.push(c);
+    }
+  });
+  if (current.length > 1) segs.push({ transport: currentT, pts: current });
+
+  const body = segs.map(s => `    <trkseg>\n${s.pts.map(pt).join("\n")}\n    </trkseg>`).join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="Route Planner" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata><name>${esc(name)}</name><time>${new Date().toISOString()}</time></metadata>
   <trk>
     <name>${esc(name)}</name>
-    <trkseg>
-${pts}
-    </trkseg>
+${body}
   </trk>
 </gpx>`;
 }
@@ -918,7 +1082,8 @@ function downloadGPX() {
   if (!state.coords.length) return;
   const name = prompt("Name for this route:", `${state.activity.label} ${round(state.stats.distance / 1000, 1)} km`);
   if (name === null) return;
-  const blob = new Blob([toGPX(state.coords, name || "Route")], { type: "application/gpx+xml" });
+  const blob = new Blob([toGPX(state.coords, name || "Route", state.segTransport)],
+                        { type: "application/gpx+xml" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = (name || "route").replace(/[^\w\-. ]+/g, "_") + ".gpx";
@@ -965,6 +1130,7 @@ function saveCurrent() {
     // route had just been drawn.
     legs: state.legs.map(leg =>
       (leg || []).map(c => [round(c[0], 6), round(c[1], 6), round(c[2], 1)])),
+    transport: state.legs.map((_, i) => !!state.transport[i]),
     distance: state.stats.distance,
     ascent: state.stats.ascent,
     savedAt: new Date().toISOString()
@@ -985,12 +1151,15 @@ function restoreRoute(id) {
   state.snap = entry.snap !== false;
   state.waypoints = entry.waypoints.map(w => ({ lat: w.lat, lng: w.lng }));
   state.legs = entry.legs.map(leg => leg.map(c => c.slice()));
+  state.transport = (entry.transport || []).slice();
+  state.transport.length = state.legs.length;
 
   // Seed the cache with the stored legs so a later edit reuses them instead of
   // re-routing — loading a saved route makes no network requests at all.
   state.legs.forEach((leg, i) => {
     if (!leg.length) return;
-    legCache.set(legKey(state.waypoints[i], state.waypoints[i + 1], activity.profile, state.snap), leg);
+    legCache.set(legKey(state.waypoints[i], state.waypoints[i + 1],
+                        activity.profile, state.snap, !!state.transport[i]), leg);
   });
 
   mergeLegs();
@@ -1046,16 +1215,54 @@ function renderSaved() {
 
 function render() {
   drawMarkers();
-  routeLine.setLatLngs(state.coords.map(c => [c[1], c[0]]));
+  drawRoute();
 
   const has = state.coords.length > 1;
   ["undo", "clear", "reverse"].forEach(id => { $(id).disabled = !state.waypoints.length; });
   $("gpx").disabled = !has;
   $("save").disabled = !has;
 
+  renderSegments();
   renderStats();
   renderFueling();
   drawProfile();
+}
+
+/** Per-leg list with a transport toggle, so any segment can be reclassified. */
+function renderSegments() {
+  const ul = $("seg-list");
+  ul.innerHTML = "";
+  if (state.legs.length < 1) return;
+
+  state.legs.forEach((leg, i) => {
+    const li = document.createElement("li");
+    const isTransport = !!state.transport[i];
+
+    let metres = 0;
+    if (leg) for (let j = 1; j < leg.length; j++) metres += haversine(leg[j - 1], leg[j]);
+
+    const name = document.createElement("span");
+    name.className = "seg-name";
+    name.textContent = `${i === 0 ? "S" : i} → ${i === state.legs.length - 1 ? "F" : i + 1}`;
+
+    const dist = document.createElement("span");
+    dist.className = "seg-dist" + (isTransport ? " transport-note" : "");
+    dist.textContent = leg ? `${round(metres / 1000, 1)} km` : "…";
+
+    const btn = document.createElement("button");
+    btn.textContent = isTransport ? "Transport" : "Ride";
+    btn.className = isTransport ? "on" : "";
+    btn.title = isTransport ? "Counts as transport — click to include it again"
+                            : "Exclude this segment as ferry / train / lift";
+    btn.onclick = () => {
+      state.transport[i] = !state.transport[i];
+      state.legs[i] = null;          // geometry differs between routed and transport
+      recalculate();
+    };
+
+    li.append(name, dist, btn);
+    ul.appendChild(li);
+  });
 }
 
 function renderStats() {
@@ -1065,6 +1272,7 @@ function renderStats() {
     return;
   }
   const effort = currentEffort();
+  const transportKm = (s.transportDistance || 0) / 1000;
   el.innerHTML = `
     <div class="stat"><div class="v">${round(s.distance / 1000, 2)} km</div><div class="l">Distance</div></div>
     <div class="stat"><div class="v">${Math.round(s.ascent)} m</div><div class="l">Elevation gain</div></div>
@@ -1073,6 +1281,11 @@ function renderStats() {
       <div class="v">${effort ? formatDuration(effort.seconds) : "—"}</div>
       <div class="l">Est. moving time</div>
     </div>
+    ${transportKm > 0.01 ? `
+    <div class="stat" style="grid-column:1/-1">
+      <div class="v transport-note">${round(transportKm, 1)} km</div>
+      <div class="l">By transport — not counted above</div>
+    </div>` : ""}
   `;
 }
 
@@ -1080,7 +1293,7 @@ function currentEffort() {
   if (!state.coords.length) return null;
   const weight = Number($("weight").value) || 75;
   const input = Number($("pace").value) || (state.activity.kind === "run" ? 5.5 : 25);
-  return estimateEffort(state.coords, state.activity, input, weight);
+  return estimateEffort(state.coords, state.activity, input, weight, state.segTransport);
 }
 
 function renderFueling() {
@@ -1180,23 +1393,29 @@ $("snap").onchange = e => {
   recalculate();
 };
 
+$("next-transport").onchange = e => { state.nextTransport = e.target.checked; };
+
 $("undo").onclick = () => {
   if (!state.waypoints.length) return;
   state.waypoints.pop();
   state.legs.pop();
+  state.transport.pop();
   recalculate();
 };
 
 $("clear").onclick = () => {
   state.waypoints = [];
   state.legs = [];
+  state.transport = [];
   state.coords = [];
+  state.segTransport = [];
   state.stats = null;
   render();
 };
 
 $("reverse").onclick = () => {
   state.waypoints.reverse();
+  state.transport.reverse();     // leg i now sits between the mirrored waypoints
   state.legs = state.legs.map(() => null);
   recalculate();
 };

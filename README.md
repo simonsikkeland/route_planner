@@ -26,6 +26,10 @@ host. That's the whole deployment.
   or `foot=no` for the relevant mode.
 - **Distance and elevation** gain/loss, using Norwegian 1 m lidar terrain data.
 - **Elevation profile** chart, hovering it highlights that point on the map.
+- **Transport segments** — mark any leg as a ferry, train or lift. It draws as a dashed
+  line and is left out of distance, climb, duration and fueling, with its distance
+  reported separately. Tick "Next segment is transport" before adding the far-side
+  point, or toggle any existing segment in the list.
 - **Fueling plan** — carbohydrate, fluid and sodium, scaled to body weight, estimated
   duration, temperature and effort.
 - **GPX export** for Garmin / Wahoo / Strava.
@@ -75,6 +79,15 @@ points. Where coverage runs out, the app falls back to BRouter's SRTM values per
 and tells you. Note that Kartverket's coverage extends somewhat past the national
 border, so routes near it usually still get the good data.
 
+**Water is handled specially.** Over sea, Kartverket returns the *seabed depth*, not a
+surface height — Sognefjord comes back as −1080 m. Taken at face value that sends any
+fjord crossing to the bottom of the sea and back up. Those points are detected by their
+`datakilde: "dybdekurver"` / `terreng: "Havflate"` markers and their elevation is
+interpolated across from the land on either side. This matters for **bridges** as much
+as ferries: simply falling back to SRTM would read ~0 m over water and make a high
+bridge look like a deep dip. On the real Moss–Horten crossing this took the figures
+from 185 m climb / −167 m low point down to 8 m climb / 0 m.
+
 In testing, Kartverket read about 3% higher than SRTM over a 7 km Nordmarka route
 (339 m vs 328 m). It is the authoritative national dataset and costs about 400 ms, so
 it is worth using — but BRouter's built-in European elevation data is already decent,
@@ -114,3 +127,11 @@ clamped to 300–1000 ml/h. Sodium is 500 mg/L, or 900 mg/L for salty sweaters.
 - Failure modes: network down, server error, and Kartverket unavailable all behave
   correctly — the first two show a clear message, the third silently falls back to SRTM
   and still produces a route.
+- Sea depth: the Moss–Horten ferry crossing reads 8 m climb / 0 m low point, against
+  185 m / −167 m before the fix.
+- Transport segments: excluding the Moss–Horten leg moves a 25.25 km route to 12.79 km
+  ridden plus 10.17 km transport, and the time estimate from 1h00m to 0h33m. GPX splits
+  into separate `trkseg`s, saved routes keep their flags across a reload with zero
+  network calls, an all-transport route reports zeroes without NaN, and deleting a
+  waypoint beside a ferry merges conservatively to a ride rather than silently
+  swallowing the crossing.

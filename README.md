@@ -40,6 +40,11 @@ host. That's the whole deployment.
   dragging inserts a point in place, which is also what a tap does on touch.
 - **Undo** steps back through what you actually did — insert, move, delete, reverse,
   transport toggle, activity change, and clear.
+- **Preview mode** — a figure travels the route, scrubbed with a slider or played back.
+  It moves at modelled speed, so it visibly slows on climbs. The readout gives distance,
+  elevation, gradient, elapsed and remaining time, and the fuel you should have taken in
+  by that point; cue markers along the route show where each gel and bottle comes due.
+  Editing is disabled while previewing, so scrubbing can't drop stray waypoints.
 
 ## Services it depends on
 
@@ -110,6 +115,16 @@ by activity — 60 km/h road, 45 gravel, 32 MTB — since descents are limited b
 confidence and surface, not physics. On a capped descent the rider is treated as
 coasting and charged no energy.
 
+**Preview pacing** reuses the same per-segment model rather than a second copy:
+`estimateEffort()` emits cumulative time at every point, and the preview drives position
+from it. On a Nordmarka test route that gives 10.9 min/km on climbs, 6.6 on the flat
+(against a stated 6.5 flat pace) and 5.2 on descents.
+
+Preview keeps three separate clocks, because they measure different things: distance
+*including* transport (what the scrubber travels), moving seconds *excluding* transport
+(what the readout reports, matching the stats), and a playback timeline that gives a
+ferry of unknown real duration a short fixed slice so the figure visibly crosses it.
+
 **Fueling** is duration-banded for carbohydrate (nothing under ~75 min, rising to
 80–100 g/h beyond 3 h, reduced ~10% for running since the gut tolerates less while
 running). Fluid starts from ~7 ml/kg/h and is adjusted for temperature and effort,
@@ -134,6 +149,12 @@ clamped to 300–1000 ml/h. Sodium is 500 mg/L, or 900 mg/L for salty sweaters.
   and still produces a route.
 - Sea depth: the Moss–Horten ferry crossing reads 8 m climb / 0 m low point, against
   185 m / −167 m before the fix.
+- Preview: scrubbing to 50% lands at exactly half the path distance; the figure
+  interpolates in ~14 m steps rather than snapping between nodes; playback at 500x runs
+  13.28 s against a predicted 13.25 s and takes exactly 2.5x longer at 200x; climbs are
+  measurably slower per metre than flat ground; cue counts match `computeFueling`
+  exactly; a sub-75-minute route produces no cues without dividing by zero; crossing a
+  ferry shows a boat and freezes elapsed time; and five enter/exit cycles leak no layers.
 - Mid-route insertion: dragging the line moves the route (3.62 → 3.91 km) and places the
   waypoint at the drop point; clicking without dragging inserts on the line with distance
   unchanged to 3 decimals. Both cost exactly 2 routing requests, neither appends a stray

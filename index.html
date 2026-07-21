@@ -150,6 +150,49 @@ table.hourly td:first-child, table.hourly th:first-child { text-align: left; }
 footer { margin-top: 22px; font-size: 11px; color: var(--muted); line-height: 1.6; }
 footer a { color: var(--muted); }
 
+/* --- Preview bar --- */
+#preview-bar {
+  display: none; flex: 0 0 auto; background: var(--panel);
+  border-top: 1px solid var(--border); padding: 8px 12px;
+}
+#preview-bar.show { display: block; }
+.pv-controls { display: flex; align-items: center; gap: 10px; }
+.pv-controls #pv-slider { flex: 1; min-width: 0; padding: 0; }
+.pv-controls #pv-speed { width: auto; flex: 0 0 auto; }
+#pv-play { width: 38px; flex: 0 0 auto; font-size: 14px; }
+.pv-follow {
+  display: flex; align-items: center; gap: 4px; margin: 0;
+  font-size: 12px; color: var(--muted); white-space: nowrap;
+}
+.pv-follow input { width: auto; }
+.pv-readout {
+  display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 8px;
+}
+.pv-readout span { display: flex; flex-direction: column; line-height: 1.25; }
+.pv-readout b { font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.pv-readout i { font-size: 10px; color: var(--muted); font-style: normal; }
+.pv-readout .pv-note { color: #5b21b6; font-size: 11px; align-self: center; }
+
+.figure {
+  font-size: 22px; line-height: 30px; text-align: center;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,.45));
+  transition: transform .1s;
+}
+.cue {
+  font-size: 11px; line-height: 18px; text-align: center;
+  background: var(--bg); border: 2px solid var(--accent);
+  border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+}
+.cue.bottle { border-color: #0284c7; }
+
+/* Editing is off during preview, so drop the affordances that imply otherwise.
+   Selector has to out-specify Leaflet's own `.leaflet-pane > svg path.leaflet-interactive`,
+   which sets pointer-events: auto and would otherwise win. */
+body.previewing .leaflet-pane > svg path.grab-line {
+  pointer-events: none; cursor: default;
+}
+body.previewing .wp-label { cursor: default; }
+
 /* --- Profile chart --- */
 #profile-svg { width: 100%; height: 100%; display: block; }
 #profile-tip {
@@ -221,6 +264,9 @@ footer a { color: var(--muted); }
 
   <h2>Stats</h2>
   <div id="stats"></div>
+  <div class="btn-row" style="margin-top:10px">
+    <button id="preview-toggle" disabled>Preview route</button>
+  </div>
 
   <h2>Fueling</h2>
   <div class="row">
@@ -269,6 +315,31 @@ footer a { color: var(--muted); }
 
 <div id="mapwrap">
   <div id="map"></div>
+
+  <div id="preview-bar">
+    <div class="pv-controls">
+      <button id="pv-play" title="Play / pause">▶</button>
+      <input type="range" id="pv-slider" min="0" max="1000" value="0" step="1" title="Scrub along the route">
+      <select id="pv-speed" title="Playback speed">
+        <option value="100">100×</option>
+        <option value="200" selected>200×</option>
+        <option value="500">500×</option>
+      </select>
+      <label class="pv-follow" title="Re-centre the map when the figure leaves the view">
+        <input type="checkbox" id="pv-follow" checked> Follow
+      </label>
+    </div>
+    <div class="pv-readout">
+      <span><b id="pv-dist">0 km</b><i>Distance</i></span>
+      <span><b id="pv-ele">0 m</b><i>Elevation</i></span>
+      <span><b id="pv-grade">0%</b><i>Gradient</i></span>
+      <span><b id="pv-elapsed">0h 00m</b><i>Elapsed</i></span>
+      <span><b id="pv-remaining">0h 00m</b><i>Remaining</i></span>
+      <span><b id="pv-fuel">— · —</b><i>Fuel taken by now</i></span>
+      <span class="pv-note" id="pv-note"></span>
+    </div>
+  </div>
+
   <div id="profile-panel" class="empty">
     <svg id="profile-svg"></svg>
     <div id="profile-tip"></div>
@@ -782,6 +853,10 @@ function bikeSpeedAt(gradient, power, massKg, maxSpeedMs, coeff) {
 /**
  * Estimated moving time (seconds) and energy expenditure (kcal) for the route,
  * walking segment by segment so that gradient is accounted for properly.
+ *
+ * Also returns `cumTime` — elapsed moving seconds at every coordinate index.
+ * Route preview drives its pacing from this, so the figure slows on climbs using
+ * the same model as the stats rather than a second copy that could drift.
  */
 function estimateEffort(coords, activity, input, weightKg, segT = []) {
   if (!coords || coords.length < 2) return null;
@@ -796,31 +871,38 @@ function estimateEffort(coords, activity, input, weightKg, segT = []) {
   const maxDescent = (activity.maxDescentKmh || 55) / 3.6;
 
   let seconds = 0, joules = 0;
+  const cumTime = new Array(coords.length);
+  cumTime[0] = 0;
 
   for (let i = 1; i < coords.length; i++) {
-    if (segT[i]) continue;                             // sitting on a ferry costs no effort
-    const d = haversine(coords[i - 1], coords[i]);
-    if (d < 0.5) continue;                             // skip near-duplicate nodes
-    const grade = clamp((coords[i][2] - coords[i - 1][2]) / d, -0.5, 0.5);
+    // Ferries and near-duplicate nodes add no time, but every index still needs
+    // a cumTime entry or the preview lookup would land on undefined.
+    if (!segT[i]) {
+      const d = haversine(coords[i - 1], coords[i]);
+      if (d >= 0.5) {
+        const grade = clamp((coords[i][2] - coords[i - 1][2]) / d, -0.5, 0.5);
 
-    if (isRun) {
-      seconds += (d / flatSpeed) * runTimeFactor(grade);
-      joules  += minettiCost(grade) * weightKg * d;    // metabolic cost, J
-    } else {
-      const v = bikeSpeedAt(grade, power, bikeMass, maxDescent, coeff);
-      const t = d / v;
-      seconds += t;
-      // On a descent the rider is often coasting, so charge only the power
-      // actually needed to hold the achieved speed — never more than they can
-      // produce, and never less than zero.
-      joules += clamp(bikePowerAt(v, grade, bikeMass, coeff), 0, power) * t;
+        if (isRun) {
+          seconds += (d / flatSpeed) * runTimeFactor(grade);
+          joules  += minettiCost(grade) * weightKg * d;    // metabolic cost, J
+        } else {
+          const v = bikeSpeedAt(grade, power, bikeMass, maxDescent, coeff);
+          const t = d / v;
+          seconds += t;
+          // On a descent the rider is often coasting, so charge only the power
+          // actually needed to hold the achieved speed — never more than they can
+          // produce, and never less than zero.
+          joules += clamp(bikePowerAt(v, grade, bikeMass, coeff), 0, power) * t;
+        }
+      }
     }
+    cumTime[i] = seconds;
   }
 
   // Running: Minetti gives metabolic cost directly.
   // Cycling: mechanical work at ~24% gross efficiency -> metabolic cost.
   const kcal = isRun ? joules / 4184 : (joules / 0.24) / 4184;
-  return { seconds, kcal };
+  return { seconds, kcal, cumTime };
 }
 
 /* ==========================================================================
@@ -918,14 +1000,16 @@ function drawRoute() {
     // SVG stroke does not reliably receive pointer events across browsers.
     L.polyline(latlngs, { className: "grab-line", weight: 18, interactive: true })
       .addTo(routeLayer)
-      .on("mousedown", ev => beginLineDrag(i, ev))
-      .on("mouseover", () => { if (!lineDrag) map.getContainer().style.cursor = "copy"; })
-      .on("mousemove", ev => { if (!lineDrag) showInsertHint(i, ev.latlng); })
+      .on("mousedown", ev => { if (!preview.active) beginLineDrag(i, ev); })
+      .on("mouseover", () => { if (!lineDrag && !preview.active) map.getContainer().style.cursor = "copy"; })
+      .on("mousemove", ev => { if (!lineDrag && !preview.active) showInsertHint(i, ev.latlng); })
       .on("mouseout", () => { if (!lineDrag) hideInsertHint(); })
       // A tap on touch arrives as a click; mousedown handles the desktop path.
       .on("click", ev => {
         L.DomEvent.stopPropagation(ev);
-        if (!lineDrag && !clickSuppressed()) insertWaypoint(i, snapToLeg(i, ev.latlng));
+        if (!lineDrag && !clickSuppressed() && !preview.active) {
+          insertWaypoint(i, snapToLeg(i, ev.latlng));
+        }
       });
   });
 }
@@ -1050,6 +1134,7 @@ const hoverMarker = L.circleMarker([0, 0], {
 });
 
 map.on("click", e => {
+  if (preview.active) return;          // preview is read-only
   pushHistory();
   state.waypoints.push({ lat: e.latlng.lat, lng: e.latlng.lng });
   const newLeg = state.waypoints.length - 2;
@@ -1063,7 +1148,7 @@ function drawMarkers() {
     const isEnd = i === 0 || i === state.waypoints.length - 1;
     const label = i === 0 ? "S" : (i === state.waypoints.length - 1 ? "F" : String(i));
     const marker = L.marker([wp.lat, wp.lng], {
-      draggable: true,
+      draggable: !preview.active,
       icon: L.divIcon({
         className: "",
         html: `<div class="wp-label${isEnd ? "" : " via"}" style="background:${
@@ -1086,7 +1171,7 @@ function drawMarkers() {
 
     marker.on("click", ev => {
       L.DomEvent.stopPropagation(ev);
-      removeWaypoint(i);
+      if (!preview.active) removeWaypoint(i);
     });
 
     markerLayer.addLayer(marker);
@@ -1208,8 +1293,14 @@ function drawProfile() {
     if (px < pad.l || px > pad.l + iw) return;
 
     const dist = ((px - pad.l) / iw) * totalD;
-    let idx = 0;
-    while (idx < s.cum.length - 1 && s.cum[idx] < dist) idx++;
+    const idx = lowerBound(s.cum, dist);
+
+    // In preview the chart doubles as a scrubber, so hovering moves the figure
+    // rather than showing a separate hover dot.
+    if (preview.active) {
+      pausePlayback();
+      setPreviewAt(preview.cumPath[idx] || 0);
+    }
 
     const c = state.coords[idx];
     const cursor = svg.querySelector("#prof-cursor");
@@ -1221,8 +1312,10 @@ function drawProfile() {
     tip.style.top = (y(c[2]) / H) * rect.height + "px";
     tip.textContent = `${round(dist / 1000, 2)} km · ${Math.round(c[2])} m`;
 
-    hoverMarker.setLatLng([c[1], c[0]]);
-    if (!map.hasLayer(hoverMarker)) hoverMarker.addTo(map);
+    if (!preview.active) {
+      hoverMarker.setLatLng([c[1], c[0]]);
+      if (!map.hasLayer(hoverMarker)) hoverMarker.addTo(map);
+    }
   };
 
   svg.onmouseleave = () => {
@@ -1231,6 +1324,334 @@ function drawProfile() {
     if (cursor) cursor.setAttribute("opacity", "0");
     if (map.hasLayer(hoverMarker)) map.removeLayer(hoverMarker);
   };
+}
+
+/* ==========================================================================
+   9b. ROUTE PREVIEW
+
+   Moves a figure along the route, driven by a slider or by playback. Pacing
+   comes from estimateEffort()'s per-point cumTime, so the figure genuinely
+   slows on climbs instead of sweeping at a constant rate.
+
+   Three clocks, because they measure different things:
+     cumPath   — distance INCLUDING transport; what the scrubber travels along
+     cumTime   — moving seconds; transport adds 0, matching the stats panel
+     playClock — the playback timeline; a ferry of unknown real duration gets a
+                 short fixed slice so the figure crosses it visibly
+   ========================================================================== */
+
+const TRANSPORT_PLAY_SECONDS = 1.5;   // playback time spent crossing one transport leg
+const GEL_GRAMS  = 25;                // one gel
+const BOTTLE_ML  = 500;               // one bottle
+
+const preview = {
+  active: false,
+  playing: false,
+  speed: 200,          // playback multiplier of real time
+  pathDist: 0,
+  cumPath: [],
+  cumTime: [],
+  playClock: [],
+  totalPath: 0,
+  totalTime: 0,
+  cues: [],
+  raf: null,
+  lastFrame: 0,
+  lastText: 0
+};
+
+const previewLayer = L.layerGroup();
+const cueLayer = L.layerGroup();
+
+const figure = L.marker([0, 0], {
+  interactive: false,
+  icon: L.divIcon({ className: "", html: '<div class="figure">🏃</div>',
+                    iconSize: [30, 30], iconAnchor: [15, 15] })
+});
+
+/** Build the three clocks plus fueling cue positions for the current route. */
+function buildPreviewModel() {
+  const c = state.coords, segT = state.segTransport;
+  preview.cumPath = []; preview.cumTime = []; preview.playClock = []; preview.cues = [];
+  preview.totalPath = 0; preview.totalTime = 0;
+
+  if (!c || c.length < 2 || !state.stats) return;
+
+  const effort = currentEffort();
+  const cumTime = (effort && effort.cumTime) || c.map(() => 0);
+
+  let path = 0, play = 0;
+  preview.cumPath[0] = 0; preview.playClock[0] = 0;
+  for (let i = 1; i < c.length; i++) {
+    path += haversine(c[i - 1], c[i]);
+    // A transport leg is one hop of geometry, so its whole crossing gets the slice.
+    play += segT[i] ? TRANSPORT_PLAY_SECONDS : (cumTime[i] - cumTime[i - 1]);
+    preview.cumPath[i] = path;
+    preview.playClock[i] = play;
+  }
+  preview.cumTime = cumTime;
+  preview.totalPath = path;
+  preview.totalTime = effort ? effort.seconds : 0;
+
+  buildCues();
+}
+
+/**
+ * One marker each time another gel or bottle falls due. Derived from elapsed
+ * moving time, so cues land where you'll actually be when the clock says so.
+ */
+function buildCues() {
+  preview.cues = [];
+  const hours = preview.totalTime / 3600;
+  if (!hours) return;
+
+  const weight = Number($("weight").value) || 75;
+  const temp = Number($("temp").value);
+  const f = computeFueling(hours, weight, isNaN(temp) ? 15 : temp,
+                           $("effort").value, $("salty").checked, state.activity.kind);
+
+  // Under about 75 minutes computeFueling returns no carbohydrate at all — there
+  // is nothing to cue, and dividing by a zero rate would spin forever.
+  const carbInterval  = f.carbPerH  > 0 ? (GEL_GRAMS / f.carbPerH) * 3600 : 0;
+  const fluidInterval = f.fluidPerH > 0 ? (BOTTLE_ML / f.fluidPerH) * 3600 : 0;
+
+  const add = (t, kind, label) => {
+    if (t <= 0 || t > preview.totalTime) return;
+    const idx = indexAtTime(t);
+    preview.cues.push({ t, kind, label, idx });
+  };
+
+  if (carbInterval > 0) {
+    let n = 1;
+    for (let t = carbInterval; t <= preview.totalTime; t += carbInterval, n++) {
+      add(t, "gel", `Gel ${n} · ${Math.round(n * GEL_GRAMS)} g carbs`);
+    }
+  }
+  if (fluidInterval > 0) {
+    let n = 1;
+    for (let t = fluidInterval; t <= preview.totalTime; t += fluidInterval, n++) {
+      add(t, "bottle", `Bottle ${n} finished · ${n * BOTTLE_ML} ml`);
+    }
+  }
+}
+
+/* --- Lookups: binary search rather than a linear scan, so scrubbing at 60 fps
+       stays flat regardless of how many points the route has. ------------- */
+
+function lowerBound(arr, value, hi) {
+  let lo = 0; hi = hi === undefined ? arr.length - 1 : hi;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] < value) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+const indexAtTime = t => lowerBound(preview.cumTime, t);
+
+/** Interpolated position at a distance along the path, so motion is smooth. */
+function pointAtPathDist(dist) {
+  const cp = preview.cumPath, c = state.coords;
+  const i = Math.max(1, lowerBound(cp, dist));
+  const span = cp[i] - cp[i - 1];
+  const f = span > 0 ? clamp((dist - cp[i - 1]) / span, 0, 1) : 0;
+  const a = c[i - 1], b = c[i];
+  return {
+    idx: i, frac: f,
+    lng: a[0] + (b[0] - a[0]) * f,
+    lat: a[1] + (b[1] - a[1]) * f,
+    ele: a[2] + (b[2] - a[2]) * f
+  };
+}
+
+/* --- The single positioning entry point -------------------------------- */
+
+/** Place the figure and update every readout. Slider, playback and chart all call this. */
+function setPreviewAt(pathDist, opts = {}) {
+  if (!preview.active || !state.coords.length) return;
+  preview.pathDist = clamp(pathDist, 0, preview.totalPath);
+
+  const p = pointAtPathDist(preview.pathDist);
+  const i = p.idx;
+  const onTransport = !!state.segTransport[i];
+
+  figure.setLatLng([p.lat, p.lng]);
+  if (!previewLayer.hasLayer(figure)) previewLayer.addLayer(figure);
+
+  // Face the direction of travel. Flipped, never rotated — a rotated emoji just
+  // looks like it has fallen over.
+  const el = figure.getElement() && figure.getElement().querySelector(".figure");
+  if (el) {
+    const heading = state.coords[i][0] - state.coords[i - 1][0];
+    el.style.transform = heading < 0 ? "scaleX(-1)" : "";
+    const glyph = onTransport ? "⛴" : (state.activity.kind === "run" ? "🏃" : "🚴");
+    if (el.textContent !== glyph) el.textContent = glyph;
+  }
+
+  if (!opts.silent) updateCamera([p.lat, p.lng]);
+
+  const slider = $("pv-slider");
+  if (slider && document.activeElement !== slider) {
+    slider.value = String(Math.round((preview.pathDist / preview.totalPath) * 1000) || 0);
+  }
+
+  // Text is comparatively expensive; playback throttles it to ~10 fps.
+  const now = performance.now();
+  if (opts.throttle && now - preview.lastText < 100) return;
+  preview.lastText = now;
+  updatePreviewReadout(p, i, onTransport);
+}
+
+function updatePreviewReadout(p, i, onTransport) {
+  const s = state.stats;
+  const elapsed = preview.cumTime[i] || 0;
+  const remaining = Math.max(0, preview.totalTime - elapsed);
+
+  // Gradient over a short window, so it reflects the slope rather than one node.
+  const j = Math.max(0, i - 3);
+  const run = haversine(state.coords[j], state.coords[i]);
+  const grade = run > 1 ? ((state.coords[i][2] - state.coords[j][2]) / run) * 100 : 0;
+
+  const hours = elapsed / 3600;
+  const weight = Number($("weight").value) || 75;
+  const temp = Number($("temp").value);
+  const f = computeFueling(preview.totalTime / 3600, weight, isNaN(temp) ? 15 : temp,
+                           $("effort").value, $("salty").checked, state.activity.kind);
+
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  set("pv-dist", `${round((s.cum[i] || 0) / 1000, 2)} km`);
+  set("pv-ele", `${Math.round(p.ele)} m`);
+  set("pv-grade", onTransport ? "—" : `${grade >= 0 ? "+" : ""}${round(grade, 1)}%`);
+  set("pv-elapsed", formatDuration(elapsed));
+  set("pv-remaining", `-${formatDuration(remaining)}`);
+  set("pv-fuel", f.carbPerH > 0
+    ? `${Math.round(hours * f.carbPerH)} g · ${Math.round(hours * f.fluidPerH)} ml`
+    : `— · ${Math.round(hours * f.fluidPerH)} ml`);
+
+  const note = $("pv-note");
+  if (note) note.textContent = onTransport ? "On transport — not counted" : "";
+}
+
+/** Pan only when the figure would leave the view; constant panning is unpleasant. */
+function updateCamera(latlng) {
+  if (!$("pv-follow") || !$("pv-follow").checked) return;
+  if (!map.getBounds().pad(-0.15).contains(L.latLng(latlng))) {
+    map.panTo(latlng, { animate: true, duration: .4 });
+  }
+}
+
+/* --- Playback ----------------------------------------------------------- */
+
+function playbackStep(ts) {
+  if (!preview.playing) return;
+  // Clamp the frame delta. requestAnimationFrame stops in a hidden tab, so
+  // without this the first frame after switching back would carry a multi-second
+  // gap, multiply it by the speed, and teleport the figure to the finish.
+  const raw = preview.lastFrame ? (ts - preview.lastFrame) / 1000 : 0;
+  const dt = clamp(raw, 0, 0.1);
+  preview.lastFrame = ts;
+
+  const pc = preview.playClock;
+  const totalPlay = pc[pc.length - 1] || 0;
+  let clock = clockAtPathDist(preview.pathDist) + dt * preview.speed;
+
+  if (clock >= totalPlay) {
+    setPreviewAt(preview.totalPath);
+    pausePlayback();
+    return;
+  }
+  setPreviewAt(pathDistAtClock(clock), { throttle: true });
+  preview.raf = requestAnimationFrame(playbackStep);
+}
+
+function clockAtPathDist(dist) {
+  const i = Math.max(1, lowerBound(preview.cumPath, dist));
+  const span = preview.cumPath[i] - preview.cumPath[i - 1];
+  const f = span > 0 ? clamp((dist - preview.cumPath[i - 1]) / span, 0, 1) : 0;
+  return preview.playClock[i - 1] + (preview.playClock[i] - preview.playClock[i - 1]) * f;
+}
+
+function pathDistAtClock(clock) {
+  const i = Math.max(1, lowerBound(preview.playClock, clock));
+  const span = preview.playClock[i] - preview.playClock[i - 1];
+  const f = span > 0 ? clamp((clock - preview.playClock[i - 1]) / span, 0, 1) : 0;
+  return preview.cumPath[i - 1] + (preview.cumPath[i] - preview.cumPath[i - 1]) * f;
+}
+
+// Animation frames don't fire while the tab is hidden, so playback would appear
+// frozen and then resume oddly. Pausing outright is honest and predictable.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && preview.playing) pausePlayback();
+});
+
+function startPlayback() {
+  if (!preview.active || preview.totalPath <= 0) return;
+  // Restart from the beginning if we're sitting at the end.
+  if (preview.pathDist >= preview.totalPath - 0.5) preview.pathDist = 0;
+  preview.playing = true;
+  preview.lastFrame = 0;
+  $("pv-play").textContent = "⏸";
+  preview.raf = requestAnimationFrame(playbackStep);
+}
+
+function pausePlayback() {
+  preview.playing = false;
+  if (preview.raf) cancelAnimationFrame(preview.raf);
+  preview.raf = null;
+  const btn = $("pv-play");
+  if (btn) btn.textContent = "▶";
+}
+
+/* --- Cue markers -------------------------------------------------------- */
+
+function drawCues() {
+  cueLayer.clearLayers();
+  if (!preview.active) return;
+  preview.cues.forEach(cue => {
+    const c = state.coords[cue.idx];
+    if (!c) return;
+    L.marker([c[1], c[0]], {
+      icon: L.divIcon({ className: "",
+        html: `<div class="cue ${cue.kind}">${cue.kind === "gel" ? "🍬" : "💧"}</div>`,
+        iconSize: [18, 18], iconAnchor: [9, 9] })
+    }).bindTooltip(cue.label, { direction: "top" }).addTo(cueLayer);
+  });
+}
+
+/* --- Mode --------------------------------------------------------------- */
+
+function setPreviewMode(on) {
+  preview.active = on;
+  pausePlayback();
+
+  $("preview-bar").classList.toggle("show", on);
+  $("preview-toggle").textContent = on ? "Exit preview" : "Preview route";
+  $("preview-toggle").classList.toggle("primary", on);
+  document.body.classList.toggle("previewing", on);
+
+  if (on) {
+    previewLayer.addTo(map);
+    cueLayer.addTo(map);
+    buildPreviewModel();
+    drawCues();
+    setPreviewAt(0);
+  } else {
+    previewLayer.clearLayers();
+    cueLayer.clearLayers();
+    map.removeLayer(previewLayer);
+    map.removeLayer(cueLayer);
+  }
+  // Waypoint dragging is part of editing, so redraw markers under the new mode.
+  drawMarkers();
+}
+
+/** Recompute after any change to the route or the fueling inputs. */
+function refreshPreview() {
+  if (!preview.active) return;
+  const wasAt = preview.totalPath > 0 ? preview.pathDist / preview.totalPath : 0;
+  buildPreviewModel();
+  drawCues();
+  setPreviewAt(wasAt * preview.totalPath);
 }
 
 /* ==========================================================================
@@ -1416,11 +1837,16 @@ function render() {
   $("undo").disabled = history.length === 0;   // tracks actions, not waypoints
   $("gpx").disabled = !has;
   $("save").disabled = !has;
+  $("preview-toggle").disabled = !has;
+
+  // A route that has vanished can't be previewed.
+  if (preview.active && !has) setPreviewMode(false);
 
   renderSegments();
   renderStats();
   renderFueling();
   drawProfile();
+  refreshPreview();
 }
 
 /** Per-leg list with a transport toggle, so any segment can be reclassified. */
@@ -1618,9 +2044,24 @@ $("reverse").onclick = () => {
 $("gpx").onclick = downloadGPX;
 $("save").onclick = saveCurrent;
 
+/* --- Preview controls --- */
+$("preview-toggle").onclick = () => setPreviewMode(!preview.active);
+
+$("pv-play").onclick = () => preview.playing ? pausePlayback() : startPlayback();
+
+$("pv-slider").addEventListener("input", e => {
+  pausePlayback();                     // scrubbing takes over from playback
+  setPreviewAt((Number(e.target.value) / 1000) * preview.totalPath);
+});
+
+$("pv-speed").onchange = e => { preview.speed = Number(e.target.value); };
+
 // Fueling inputs only affect the calculation, never the route — recompute locally.
 ["weight", "pace", "temp", "effort", "salty"].forEach(id => {
-  $(id).addEventListener("input", () => { renderStats(); renderFueling(); });
+  $(id).addEventListener("input", () => {
+    renderStats(); renderFueling();
+    refreshPreview();                  // pacing and cues depend on these
+  });
 });
 
 let resizeTimer;
